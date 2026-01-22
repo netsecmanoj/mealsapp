@@ -11,6 +11,9 @@ enum Role {
   EMPLOYEE
   SUPERVISOR
   ADMIN
+  HR_ADMIN
+  SUPER_ADMIN
+  GROUND_STAFF
 }
 
 enum MealType {
@@ -37,6 +40,15 @@ model User {
   updatedAt      DateTime     @updatedAt
   mealChoices    MealChoice[] @relation("MealChoiceUser")
   updatedChoices MealChoice[] @relation("MealChoiceUpdatedBy")
+  serviceDays    ServiceDay[] @relation("ServiceDayUpdatedBy")
+  supervisorLink SupervisorAssignment? @relation("EmployeeAssignment")
+  superviseeLinks SupervisorAssignment[] @relation("SupervisorAssignment")
+  mealPreferences MealPreference[]
+  updatedPreferences MealPreference[] @relation("MealPreferenceUpdatedBy")
+  mealCheckins MealCheckin[]
+  recordedCheckins MealCheckin[] @relation("MealCheckinRecordedBy")
+  auditLogs AuditLog[] @relation("AuditActor")
+  appSettings AppSetting[] @relation("AppSettingUpdatedBy")
 }
 
 model MealChoice {
@@ -53,4 +65,91 @@ model MealChoice {
 
   @@unique([userId, date, mealType])
   @@index([date, mealType])
+}
+
+model ServiceDay {
+  date             String   @id
+  isOfficeOpen     Boolean  @default(true)
+  breakfastServed  Boolean  @default(true)
+  lunchServed      Boolean  @default(true)
+  dinnerServed     Boolean  @default(true)
+  breakfastCutoff  String?
+  lunchCutoff      String?
+  dinnerCutoff     String?
+  note             String?
+  updatedAt        DateTime @updatedAt
+  updatedById      String?
+  updatedBy        User?    @relation("ServiceDayUpdatedBy", fields: [updatedById], references: [id])
+}
+
+model SupervisorAssignment {
+  id           String   @id @default(cuid())
+  employeeId   String   @unique
+  supervisorId String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  employee     User     @relation("EmployeeAssignment", fields: [employeeId], references: [id])
+  supervisor   User     @relation("SupervisorAssignment", fields: [supervisorId], references: [id])
+
+  @@index([supervisorId])
+}
+
+model MealPreference {
+  id              String   @id @default(cuid())
+  userId          String
+  mealType        MealType
+  defaultWantMeal Boolean
+  daysMask        Int      @default(127)
+  startDate       String?
+  endDate         String?
+  active          Boolean  @default(true)
+  updatedAt       DateTime @updatedAt
+  updatedById     String?
+
+  user        User  @relation(fields: [userId], references: [id])
+  updatedBy   User? @relation("MealPreferenceUpdatedBy", fields: [updatedById], references: [id])
+
+  @@index([userId, mealType])
+}
+
+model MealCheckin {
+  id           String   @id @default(cuid())
+  date         String
+  mealType     MealType
+  userId       String
+  takenAt      DateTime @default(now())
+  recordedById String?
+  note         String?
+
+  user        User  @relation(fields: [userId], references: [id])
+  recordedBy  User? @relation("MealCheckinRecordedBy", fields: [recordedById], references: [id])
+
+  @@unique([userId, date, mealType])
+  @@index([date, mealType])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  entity    String
+  entityId  String?
+  reason    String?
+  before    String?
+  after     String?
+  createdAt DateTime @default(now())
+
+  actor     User? @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([createdAt])
+  @@index([actorId])
+}
+
+model AppSetting {
+  key         String   @id
+  value       String
+  updatedAt   DateTime @updatedAt
+  updatedById String?
+  updatedBy   User?    @relation("AppSettingUpdatedBy", fields: [updatedById], references: [id])
 }

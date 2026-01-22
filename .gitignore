@@ -1,0 +1,11 @@
+# Node
+**/node_modules/
+
+# Local SQLite / Prisma
+api/prisma/*.db
+api/prisma/*.db-journal
+api/prisma/dev.db
+api/prisma/dev.db-journal
+
+# Env
+**/.env
