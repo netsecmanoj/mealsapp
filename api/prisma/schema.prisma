@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  EMPLOYEE
+  SUPERVISOR
+  ADMIN
+}
+
+enum MealType {
+  BREAKFAST
+  LUNCH
+  DINNER
+}
+
+enum Source {
+  SELF
+  SUPERVISOR
+  ADMIN
+}
+
+model User {
+  id             String       @id @default(cuid())
+  employeeId     String       @unique
+  name           String
+  dept           String?
+  role           Role
+  pinHash        String
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  mealChoices    MealChoice[] @relation("MealChoiceUser")
+  updatedChoices MealChoice[] @relation("MealChoiceUpdatedBy")
+}
+
+model MealChoice {
+  id          String   @id @default(cuid())
+  date        DateTime
+  mealType    MealType
+  wantMeal    Boolean
+  source      Source
+  updatedAt   DateTime @updatedAt
+  userId      String
+  updatedById String?
+  user        User     @relation("MealChoiceUser", fields: [userId], references: [id])
+  updatedBy   User?    @relation("MealChoiceUpdatedBy", fields: [updatedById], references: [id])
+
+  @@unique([userId, date, mealType])
+  @@index([date, mealType])
+}
