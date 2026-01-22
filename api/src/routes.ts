@@ -1,7 +1,7 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { MealType, PrismaClient, Role, Source } from "@prisma/client";
+import { MealRequestStatus, MealType, PrismaClient, Role, Source } from "@prisma/client";
 import { authMiddleware, requireRole, signToken } from "./auth.js";
 
 const prisma = new PrismaClient();
@@ -270,7 +270,7 @@ async function logAudit(params: {
 async function getEffectiveChoicesForUser(userId: string, from: string, to: string) {
   const settings = await getSettingsSnapshot();
   const dates = getDateRange(from, to);
-  const [choices, preferences, serviceRecords] = await Promise.all([
+  const [choices, preferences, serviceRecords, requests] = await Promise.all([
     prisma.mealChoice.findMany({
       where: {
         userId,
@@ -287,6 +287,9 @@ async function getEffectiveChoicesForUser(userId: string, from: string, to: stri
     prisma.serviceDay.findMany({
       where: { date: { in: dates } },
     }),
+    prisma.mealRequest.findMany({
+      where: { userId, date: { in: dates } },
+    }),
   ]);
 
   const choiceMap = new Map(
@@ -296,6 +299,9 @@ async function getEffectiveChoicesForUser(userId: string, from: string, to: stri
     ])
   );
   const serviceMap = new Map(serviceRecords.map((record) => [record.date, record]));
+  const requestMap = new Map(
+    requests.map((req) => [`${req.date}|${req.mealType}`, req])
+  );
   const updatedByIds = Array.from(new Set(choices.map((choice) => choice.updatedById).filter(Boolean)));
   const updatedByList = updatedByIds.length
     ? await prisma.user.findMany({
@@ -315,11 +321,13 @@ async function getEffectiveChoicesForUser(userId: string, from: string, to: stri
   for (const dateStr of dates) {
     const serviceDay = mergeServiceDay(dateStr, serviceMap.get(dateStr), settings);
     for (const mealType of [MealType.BREAKFAST, MealType.LUNCH, MealType.DINNER]) {
-      const served = isMealServed(serviceDay, mealType);
+      const officeOpen = serviceDay.isOfficeOpen !== false;
+      const servedGlobal = isMealServed(serviceDay, mealType);
       const key = `${dateStr}|${mealType}`;
       const explicit = choiceMap.get(key);
+      const request = requestMap.get(key);
       const cutoffLabel = getCutoffLabel(mealType, serviceDay, settings);
-      const cutoffPassed = served
+      const cutoffPassed = servedGlobal
         ? new Date() > getCutoffDate(dateStr, mealType, serviceDay, settings)
         : false;
       const updatedByRole = explicit?.updatedById ? updatedByMap.get(explicit.updatedById) : null;
@@ -327,18 +335,23 @@ async function getEffectiveChoicesForUser(userId: string, from: string, to: stri
         !!explicit &&
         (updatedByRole === Role.HR_ADMIN || updatedByRole === Role.SUPER_ADMIN) &&
         explicit.updatedAt > getCutoffDate(dateStr, mealType, serviceDay, settings);
-      if (!served) {
+      if (!servedGlobal || !officeOpen) {
         result.push({
           date: dateStr,
           mealType,
           status: "NA",
-          wantMeal: null,
-          served,
-          officeOpen: serviceDay.isOfficeOpen,
+          choiceStatus: "NA",
+          wantMeal: request?.status === "APPROVED" ? true : null,
+          defaultHintWantMeal: null,
+          served: servedGlobal,
+          servedGlobal,
+          officeOpen,
           cutoffLabel,
           cutoffPassed,
           overridden: false,
           overriddenByRole: null,
+          requestStatus: request?.status ?? null,
+          requestReason: request?.decisionReason ?? null,
         });
         continue;
       }
@@ -347,13 +360,18 @@ async function getEffectiveChoicesForUser(userId: string, from: string, to: stri
           date: dateStr,
           mealType,
           status: "EXPLICIT",
+          choiceStatus: "EXPLICIT",
           wantMeal: explicit.wantMeal,
-          served,
-          officeOpen: serviceDay.isOfficeOpen,
+          defaultHintWantMeal: null,
+          served: servedGlobal,
+          servedGlobal,
+          officeOpen,
           cutoffLabel,
           cutoffPassed,
           overridden,
           overriddenByRole: overridden ? updatedByRole : null,
+          requestStatus: request?.status ?? null,
+          requestReason: request?.decisionReason ?? null,
         });
         continue;
       }
@@ -364,26 +382,36 @@ async function getEffectiveChoicesForUser(userId: string, from: string, to: stri
           date: dateStr,
           mealType,
           status: "DEFAULT",
-          wantMeal: pref.defaultWantMeal,
-          served,
-          officeOpen: serviceDay.isOfficeOpen,
+          choiceStatus: "DEFAULT",
+          wantMeal: null,
+          defaultHintWantMeal: pref.defaultWantMeal,
+          served: servedGlobal,
+          servedGlobal,
+          officeOpen,
           cutoffLabel,
           cutoffPassed,
           overridden: false,
           overriddenByRole: null,
+          requestStatus: request?.status ?? null,
+          requestReason: request?.decisionReason ?? null,
         });
       } else {
         result.push({
           date: dateStr,
           mealType,
           status: "NOT_SET",
+          choiceStatus: "NOT_SET",
           wantMeal: null,
-          served,
-          officeOpen: serviceDay.isOfficeOpen,
+          defaultHintWantMeal: null,
+          served: servedGlobal,
+          servedGlobal,
+          officeOpen,
           cutoffLabel,
           cutoffPassed,
           overridden: false,
           overriddenByRole: null,
+          requestStatus: request?.status ?? null,
+          requestReason: request?.decisionReason ?? null,
         });
       }
     }
@@ -539,6 +567,220 @@ router.post("/me/choice", authMiddleware, async (req, res) => {
   });
 });
 
+router.post("/meal-requests", authMiddleware, async (req, res) => {
+  const schema = z.object({
+    date: dateOnlySchema,
+    mealType: z.nativeEnum(MealType),
+    note: z.string().trim().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success || !req.user) {
+    return res.status(400).json({ error: "Invalid payload" });
+  }
+
+  const { date, mealType, note } = parsed.data;
+  const settings = await getSettingsSnapshot();
+  const serviceDay = await getEffectiveServiceDay(date);
+  if (!serviceDay.isOfficeOpen) {
+    return res.status(409).json({ error: "Office closed" });
+  }
+  if (isMealServed(serviceDay, mealType)) {
+    return res.status(409).json({ error: "Meal already served; no request needed" });
+  }
+
+  const cutoffDate = getCutoffDate(date, mealType, serviceDay, settings);
+  const isAfterCutoff = new Date() > cutoffDate;
+  const isHrOverride = req.user.role === Role.HR_ADMIN || req.user.role === Role.SUPER_ADMIN;
+  if (isAfterCutoff && !isHrOverride) {
+    return res.status(403).json({ error: "Cutoff passed" });
+  }
+  if (isAfterCutoff && isHrOverride && !note) {
+    return res.status(400).json({ error: "Override reason required" });
+  }
+
+  const existing = await prisma.mealRequest.findUnique({
+    where: {
+      userId_date_mealType: {
+        userId: req.user.id,
+        date,
+        mealType,
+      },
+    },
+  });
+
+  if (
+    existing &&
+    (existing.status === MealRequestStatus.APPROVED || existing.status === MealRequestStatus.REJECTED) &&
+    !isHrOverride
+  ) {
+    return res.status(409).json({ error: "Request already decided" });
+  }
+
+  const request = await prisma.mealRequest.upsert({
+    where: {
+      userId_date_mealType: {
+        userId: req.user.id,
+        date,
+        mealType,
+      },
+    },
+    create: {
+      userId: req.user.id,
+      date,
+      mealType,
+      status: MealRequestStatus.PENDING,
+      note: note ?? null,
+    },
+    update: {
+      status: MealRequestStatus.PENDING,
+      note: note ?? null,
+      decidedById: null,
+      decidedAt: null,
+      decisionReason: null,
+    },
+  });
+
+  await logAudit({
+    actorId: req.user.id,
+    action: "CREATE_MEAL_REQUEST",
+    entity: "MealRequest",
+    entityId: request.id,
+    reason: note ?? null,
+    before: existing ?? null,
+    after: request,
+  });
+
+  return res.json(request);
+});
+
+router.delete("/meal-requests", authMiddleware, async (req, res) => {
+  const schema = z.object({
+    date: dateOnlySchema,
+    mealType: z.nativeEnum(MealType),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success || !req.user) {
+    return res.status(400).json({ error: "Invalid payload" });
+  }
+
+  const { date, mealType } = parsed.data;
+  const existing = await prisma.mealRequest.findUnique({
+    where: {
+      userId_date_mealType: {
+        userId: req.user.id,
+        date,
+        mealType,
+      },
+    },
+  });
+
+  if (!existing) {
+    return res.status(404).json({ error: "Request not found" });
+  }
+  if (existing.status !== MealRequestStatus.PENDING) {
+    return res.status(409).json({ error: "Only pending requests can be canceled" });
+  }
+
+  const updated = await prisma.mealRequest.update({
+    where: { id: existing.id },
+    data: { status: MealRequestStatus.CANCELLED },
+  });
+
+  await logAudit({
+    actorId: req.user.id,
+    action: "CANCEL_MEAL_REQUEST",
+    entity: "MealRequest",
+    entityId: updated.id,
+    before: existing,
+    after: updated,
+  });
+
+  return res.json(updated);
+});
+
+router.get("/me/meal-requests", authMiddleware, async (req, res) => {
+  const schema = z.object({
+    from: dateOnlySchema,
+    to: dateOnlySchema,
+  });
+  const parsed = schema.safeParse(req.query);
+  if (!parsed.success || !req.user) {
+    return res.status(400).json({ error: "Invalid date range" });
+  }
+
+  const { from, to } = parsed.data;
+  const requests = await prisma.mealRequest.findMany({
+    where: {
+      userId: req.user.id,
+      date: {
+        gte: from,
+        lte: to,
+      },
+    },
+    orderBy: [{ date: "asc" }, { mealType: "asc" }],
+  });
+
+  return res.json(requests);
+});
+
+router.delete("/choice", authMiddleware, async (req, res) => {
+  const schema = z.object({
+    date: dateOnlySchema,
+    mealType: z.nativeEnum(MealType),
+    reason: z.string().trim().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success || !req.user) {
+    return res.status(400).json({ error: "Invalid payload" });
+  }
+
+  const { date, mealType, reason } = parsed.data;
+  const dateValue = normalizeDateOnly(date);
+  const settings = await getSettingsSnapshot();
+  const serviceDay = await getEffectiveServiceDay(date);
+  if (!isMealServed(serviceDay, mealType)) {
+    return res.status(409).json({ error: "Meal not served" });
+  }
+  const cutoffDate = getCutoffDate(date, mealType, serviceDay, settings);
+  const isAfterCutoff = new Date() > cutoffDate;
+  const isHrOverride = req.user.role === Role.HR_ADMIN || req.user.role === Role.SUPER_ADMIN;
+  if (isAfterCutoff && !isHrOverride) {
+    return res.status(403).json({ error: "Cutoff passed" });
+  }
+  if (isAfterCutoff && isHrOverride && !reason) {
+    return res.status(400).json({ error: "Override reason required" });
+  }
+
+  const existing = await prisma.mealChoice.findUnique({
+    where: {
+      userId_date_mealType: {
+        userId: req.user.id,
+        date: dateValue,
+        mealType,
+      },
+    },
+  });
+
+  if (existing) {
+    await prisma.mealChoice.delete({
+      where: { id: existing.id },
+    });
+    await logAudit({
+      actorId: req.user.id,
+      action: "DELETE_CHOICE",
+      entity: "MealChoice",
+      entityId: existing.id,
+      reason: reason ?? null,
+      before: existing,
+      after: null,
+    });
+  }
+
+  const effective = await getEffectiveChoicesForUser(req.user.id, date, date);
+  const updated = effective.find((item) => item.mealType === mealType);
+  return res.json({ ok: true, choice: updated });
+});
+
 router.post(
   "/staff/choice",
   authMiddleware,
@@ -628,6 +870,152 @@ router.post(
       source: choice.source,
       overridden: isAfterCutoff && isHrOverride,
     });
+  }
+);
+
+router.get(
+  "/admin/meal-requests",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (req, res) => {
+    const schema = z.object({
+      from: dateOnlySchema,
+      to: dateOnlySchema,
+      status: z.nativeEnum(MealRequestStatus).optional(),
+    });
+    const parsed = schema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid date range" });
+    }
+
+    const { from, to, status } = parsed.data;
+    const requests = await prisma.mealRequest.findMany({
+      where: {
+        date: {
+          gte: from,
+          lte: to,
+        },
+        ...(status ? { status } : {}),
+      },
+      include: {
+        user: {
+          select: { employeeId: true, name: true, dept: true },
+        },
+      },
+      orderBy: [{ date: "asc" }, { mealType: "asc" }],
+    });
+
+    return res.json(requests);
+  }
+);
+
+router.post(
+  "/admin/meal-requests/decide",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (req, res) => {
+    const schema = z.object({
+      id: z.string().min(1),
+      decision: z.enum(["APPROVE", "REJECT"]),
+      reason: z.string().trim().min(1),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success || !req.user) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+
+    const { id, decision, reason } = parsed.data;
+    const existing = await prisma.mealRequest.findUnique({
+      where: { id },
+    });
+    if (!existing) {
+      return res.status(404).json({ error: "Request not found" });
+    }
+    if (existing.status === MealRequestStatus.APPROVED || existing.status === MealRequestStatus.REJECTED) {
+      return res.status(409).json({ error: "Request already decided" });
+    }
+
+    if (decision === "APPROVE") {
+      const updated = await prisma.mealRequest.update({
+        where: { id: existing.id },
+        data: {
+          status: MealRequestStatus.APPROVED,
+          decidedById: req.user.id,
+          decidedAt: new Date(),
+          decisionReason: reason,
+        },
+      });
+
+      const choice = await prisma.mealChoice.upsert({
+        where: {
+          userId_date_mealType: {
+            userId: existing.userId,
+            date: normalizeDateOnly(existing.date),
+            mealType: existing.mealType,
+          },
+        },
+        create: {
+          userId: existing.userId,
+          date: normalizeDateOnly(existing.date),
+          mealType: existing.mealType,
+          wantMeal: true,
+          source: Source.ADMIN,
+          updatedById: req.user.id,
+        },
+        update: {
+          wantMeal: true,
+          source: Source.ADMIN,
+          updatedById: req.user.id,
+        },
+      });
+
+      await logAudit({
+        actorId: req.user.id,
+        action: "APPROVE_MEAL_REQUEST",
+        entity: "MealRequest",
+        entityId: updated.id,
+        reason,
+        before: existing,
+        after: updated,
+      });
+      await logAudit({
+        actorId: req.user.id,
+        action: "AUTO_CREATE_CHOICE_FROM_REQUEST",
+        entity: "MealChoice",
+        entityId: choice.id,
+        reason,
+        after: {
+          userId: existing.userId,
+          date: existing.date,
+          mealType: existing.mealType,
+          wantMeal: true,
+        },
+      });
+
+      return res.json(updated);
+    }
+
+    const updated = await prisma.mealRequest.update({
+      where: { id: existing.id },
+      data: {
+        status: MealRequestStatus.REJECTED,
+        decidedById: req.user.id,
+        decidedAt: new Date(),
+        decisionReason: reason,
+      },
+    });
+
+    await logAudit({
+      actorId: req.user.id,
+      action: "REJECT_MEAL_REQUEST",
+      entity: "MealRequest",
+      entityId: updated.id,
+      reason,
+      before: existing,
+      after: updated,
+    });
+
+    return res.json(updated);
   }
 );
 
@@ -1222,52 +1610,131 @@ router.post(
   requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
     const schema = z.object({
-      from: dateOnlySchema,
-      to: dateOnlySchema,
+      from: dateOnlySchema.optional(),
+      to: dateOnlySchema.optional(),
       templateName: z.string().optional(),
+      days: z.number().int().min(1).max(365).optional(),
+      startDate: dateOnlySchema.optional(),
+      overwriteExisting: z.boolean().optional(),
+      keepSundaysClosed: z.boolean().optional(),
+      template: z
+        .object({
+          officeOpen: z.boolean(),
+          breakfastServed: z.boolean(),
+          lunchServed: z.boolean(),
+          dinnerServed: z.boolean(),
+        })
+        .optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
     }
 
-    const { from, to } = parsed.data;
+    const { from, to, days, startDate, overwriteExisting, keepSundaysClosed, template } = parsed.data;
     const settings = await getSettingsSnapshot();
-    const startParts = from.split("-").map((part) => Number(part));
-    const endParts = to.split("-").map((part) => Number(part));
-    const startDate = new Date(startParts[0], startParts[1] - 1, startParts[2]);
-    const endDate = new Date(endParts[0], endParts[1] - 1, endParts[2]);
+    const resolvedStart = startDate || from || formatLocalDate(new Date());
+    const resolvedDays = days ?? (from && to ? getDateRange(from, to).length : null);
+    if (!resolvedDays) {
+      return res.status(400).json({ error: "Invalid date range" });
+    }
+    const startParts = resolvedStart.split("-").map((part) => Number(part));
+    const startDateObj = new Date(startParts[0], startParts[1] - 1, startParts[2]);
+    const endDateObj = new Date(startDateObj);
+    endDateObj.setDate(endDateObj.getDate() + resolvedDays - 1);
+    if (endDateObj < startDateObj) {
+      return res.status(400).json({ error: "Invalid date range" });
+    }
     const actions = [];
-    const cursor = new Date(startDate);
-    while (cursor <= endDate) {
+    const cursor = new Date(startDateObj);
+    const existingRows = await prisma.serviceDay.findMany({
+      where: {
+        date: {
+          gte: formatLocalDate(startDateObj),
+          lte: formatLocalDate(endDateObj),
+        },
+      },
+      select: { date: true, updatedById: true, note: true },
+    });
+    const existingMap = new Map(
+      existingRows.map((row) => [row.date, { updatedById: row.updatedById, note: row.note }])
+    );
+    const templateUpdatedById = overwriteExisting ? req.user.id : null;
+    let updatedCount = 0;
+    let skippedCount = 0;
+    while (cursor <= endDateObj) {
       const dateStr = formatLocalDate(cursor);
-      const template = getTemplateForDate(dateStr, settings);
-      actions.push(
-        prisma.serviceDay.upsert({
-          where: { date: dateStr },
-          create: {
-            date: dateStr,
-            ...template,
-            updatedById: req.user.id,
-          },
-          update: {
-            ...template,
-            updatedById: req.user.id,
-          },
-        })
-      );
+      const existing = existingMap.get(dateStr);
+      const isManual =
+        !!existing &&
+        ((existing.updatedById && existing.updatedById.length > 0) ||
+          (existing.note && existing.note.trim().length > 0));
+      const shouldSkip = !overwriteExisting && isManual;
+      if (shouldSkip) {
+        skippedCount += 1;
+      } else {
+        let resolvedTemplate = template ? { ...template } : getTemplateForDate(dateStr, settings);
+        if (template) {
+          const dayOfWeek = cursor.getDay();
+          if (keepSundaysClosed && dayOfWeek === 0) {
+            resolvedTemplate = {
+              officeOpen: false,
+              breakfastServed: false,
+              lunchServed: false,
+              dinnerServed: false,
+            };
+          }
+        }
+        actions.push(
+          prisma.serviceDay.upsert({
+            where: { date: dateStr },
+            create: {
+              date: dateStr,
+              isOfficeOpen: resolvedTemplate.officeOpen,
+              breakfastServed: resolvedTemplate.breakfastServed,
+              lunchServed: resolvedTemplate.lunchServed,
+              dinnerServed: resolvedTemplate.dinnerServed,
+              updatedById: templateUpdatedById,
+            },
+            update: {
+              isOfficeOpen: resolvedTemplate.officeOpen,
+              breakfastServed: resolvedTemplate.breakfastServed,
+              lunchServed: resolvedTemplate.lunchServed,
+              dinnerServed: resolvedTemplate.dinnerServed,
+              updatedById: templateUpdatedById,
+            },
+          })
+        );
+        updatedCount += 1;
+      }
       cursor.setDate(cursor.getDate() + 1);
     }
 
-    await prisma.$transaction(actions);
+    if (actions.length) {
+      await prisma.$transaction(actions);
+    }
     await logAudit({
       actorId: req.user.id,
-      action: "APPLY_TEMPLATE",
+      action: "APPLY_SERVICE_DAY_TEMPLATE",
       entity: "ServiceDay",
-      reason: parsed.data.templateName ?? null,
-      after: { from, to },
+      reason: `Applied weekly template for next ${resolvedDays} days`,
+      after: {
+        startDate: resolvedStart,
+        endDate: formatLocalDate(endDateObj),
+        days: resolvedDays,
+        updatedCount,
+        skippedCount,
+        overwriteExisting: overwriteExisting === true,
+        keepSundaysClosed: keepSundaysClosed === true,
+      },
     });
-    return res.json({ ok: true, from, to });
+    return res.json({
+      ok: true,
+      updatedCount,
+      skippedCount,
+      startDate: resolvedStart,
+      endDate: formatLocalDate(endDateObj),
+    });
   }
 );
 
@@ -1414,13 +1881,17 @@ router.get(
       select: { id: true, dept: true },
     });
 
-    const [choices, preferences] = await Promise.all([
+    const [choices, preferences, approvedRequests] = await Promise.all([
       prisma.mealChoice.findMany({
         where: { date: dateValue },
       }),
       prisma.mealPreference.findMany({
         where: { userId: { in: users.map((user) => user.id) }, active: true },
         orderBy: { updatedAt: "desc" },
+      }),
+      prisma.mealRequest.findMany({
+        where: { date: dateStr, status: MealRequestStatus.APPROVED },
+        select: { mealType: true },
       }),
     ]);
 
@@ -1440,6 +1911,14 @@ router.get(
       LUNCH: served.LUNCH ? { yes: 0, no: 0, notSet: 0 } : null,
       DINNER: served.DINNER ? { yes: 0, no: 0, notSet: 0 } : null,
     };
+    const approvedCounts = {
+      BREAKFAST: 0,
+      LUNCH: 0,
+      DINNER: 0,
+    };
+    for (const request of approvedRequests) {
+      approvedCounts[request.mealType] += 1;
+    }
     const deptBreakdown: Record<string, any> = {};
 
     for (const user of users) {
@@ -1507,7 +1986,146 @@ router.get(
           : null,
     };
 
-    return res.json({ date: dateStr, served, counts, checkins, waste, deptBreakdown });
+    return res.json({
+      date: dateStr,
+      served,
+      counts,
+      approvedRequests: approvedCounts,
+      checkins,
+      waste,
+      deptBreakdown,
+    });
+  }
+);
+
+router.get(
+  "/reports/daily/details",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (req, res) => {
+    const schema = z.object({
+      date: dateOnlySchema,
+      view: z.enum(["combined", "meal"]).default("combined"),
+      mealType: z.nativeEnum(MealType).optional(),
+    });
+    const parsed = schema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid query" });
+    }
+
+    const { date: dateValue, view, mealType } = parsed.data;
+    if (view === "meal" && !mealType) {
+      return res.status(400).json({ error: "mealType required for meal view" });
+    }
+
+    const dateValueObj = normalizeDateOnly(dateValue);
+    const serviceDay = await getEffectiveServiceDay(dateValue);
+    const officeOpen = serviceDay.isOfficeOpen !== false;
+    const served = {
+      BREAKFAST: isMealServed(serviceDay, MealType.BREAKFAST),
+      LUNCH: isMealServed(serviceDay, MealType.LUNCH),
+      DINNER: isMealServed(serviceDay, MealType.DINNER),
+    };
+
+    const users = await prisma.user.findMany({
+      where: { active: true },
+      select: { id: true, employeeId: true, name: true, dept: true },
+      orderBy: { employeeId: "asc" },
+    });
+
+    const [choices, preferences, requests, checkins] = await Promise.all([
+      prisma.mealChoice.findMany({
+        where: { date: dateValueObj },
+      }),
+      prisma.mealPreference.findMany({
+        where: { userId: { in: users.map((user) => user.id) }, active: true },
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.mealRequest.findMany({
+        where: { date: dateValue },
+      }),
+      prisma.mealCheckin.findMany({
+        where: { date: dateValue },
+      }),
+    ]);
+
+    const choiceMap = new Map(
+      choices.map((choice) => [`${choice.userId}:${choice.mealType}`, choice])
+    );
+    const requestMap = new Map(
+      requests.map((request) => [`${request.userId}:${request.mealType}`, request])
+    );
+    const checkinMap = new Map(
+      checkins.map((checkin) => [`${checkin.userId}:${checkin.mealType}`, checkin])
+    );
+    const prefMap = new Map<string, any>();
+    for (const pref of preferences) {
+      const key = `${pref.userId}:${pref.mealType}`;
+      if (!prefMap.has(key) && preferenceApplies(pref, dateValue)) {
+        prefMap.set(key, pref);
+      }
+    }
+
+    const mealsToInclude =
+      view === "meal" && mealType
+        ? [mealType]
+        : [MealType.BREAKFAST, MealType.LUNCH, MealType.DINNER];
+
+    const rows = users.map((user) => {
+      const row: any = {
+        employeeId: user.employeeId,
+        name: user.name,
+        department: user.dept || "Unassigned",
+      };
+      for (const meal of mealsToInclude) {
+        const availability = officeOpen && served[meal];
+        const key = `${user.id}:${meal}`;
+        const request = requestMap.get(key);
+        if (!availability) {
+          row[meal.toLowerCase()] = {
+            final: "NA",
+            source: "NA",
+            requestStatus: request?.status ?? null,
+          };
+          continue;
+        }
+        const explicit = choiceMap.get(key);
+        if (explicit) {
+          row[meal.toLowerCase()] = {
+            final: explicit.wantMeal ? "YES" : "NO",
+            source: "EXPLICIT",
+            requestStatus: request?.status ?? null,
+          };
+          continue;
+        }
+        const pref = prefMap.get(key);
+        if (pref) {
+          row[meal.toLowerCase()] = {
+            final: pref.defaultWantMeal ? "YES" : "NO",
+            source: "DEFAULT",
+            requestStatus: request?.status ?? null,
+          };
+        } else {
+          row[meal.toLowerCase()] = {
+            final: "NOT_SET",
+            source: "NOT_SET",
+            requestStatus: request?.status ?? null,
+          };
+        }
+      }
+      return row;
+    });
+
+    return res.json({
+      date: dateValue,
+      officeOpen,
+      serviceDay: {
+        breakfastServed: served.BREAKFAST,
+        lunchServed: served.LUNCH,
+        dinnerServed: served.DINNER,
+      },
+      rows,
+    });
   }
 );
 

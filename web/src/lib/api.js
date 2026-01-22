@@ -1,9 +1,22 @@
 const baseUrl = import.meta.env.VITE_API_URL;
 const sessionKey = "meals.session";
+const legacySessionKey = "session";
+export const SESSION_EVENT = "meals:session";
 
 export function getSession() {
   const raw = localStorage.getItem(sessionKey);
-  if (!raw) return null;
+  if (!raw) {
+    const legacyRaw = localStorage.getItem(legacySessionKey);
+    if (!legacyRaw) return null;
+    try {
+      const legacy = JSON.parse(legacyRaw);
+      localStorage.setItem(sessionKey, JSON.stringify(legacy));
+      localStorage.removeItem(legacySessionKey);
+      return legacy;
+    } catch {
+      return null;
+    }
+  }
   try {
     return JSON.parse(raw);
   } catch {
@@ -13,10 +26,14 @@ export function getSession() {
 
 export function setSession(session) {
   localStorage.setItem(sessionKey, JSON.stringify(session));
+  localStorage.removeItem(legacySessionKey);
+  window.dispatchEvent(new Event(SESSION_EVENT));
 }
 
 export function clearSession() {
   localStorage.removeItem(sessionKey);
+  localStorage.removeItem(legacySessionKey);
+  window.dispatchEvent(new Event(SESSION_EVENT));
 }
 
 async function apiFetch(path, options = {}) {
@@ -92,10 +109,44 @@ export async function applyServiceDayTemplate(from, to, templateName) {
   });
 }
 
+export async function applyAvailabilityTemplate(payload) {
+  return apiFetch("/api/admin/service-days/apply-template", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function setMyChoice(date, mealType, wantMeal) {
   return apiFetch("/api/me/choice", {
     method: "POST",
     body: JSON.stringify({ date, mealType, wantMeal }),
+  });
+}
+
+export async function deleteChoice(date, mealType, reason) {
+  return apiFetch("/api/choice", {
+    method: "DELETE",
+    body: JSON.stringify({ date, mealType, reason }),
+  });
+}
+
+export async function createMealRequest(date, mealType, note) {
+  return apiFetch("/api/meal-requests", {
+    method: "POST",
+    body: JSON.stringify({ date, mealType, note }),
+  });
+}
+
+export async function cancelMealRequest(date, mealType) {
+  return apiFetch("/api/meal-requests", {
+    method: "DELETE",
+    body: JSON.stringify({ date, mealType }),
+  });
+}
+
+export async function listMyMealRequests(from, to) {
+  return apiFetch(`/api/me/meal-requests?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, {
+    method: "GET",
   });
 }
 
@@ -143,6 +194,21 @@ export async function adminAssignSupervisor(employeeId, supervisorEmployeeId, re
   });
 }
 
+export async function adminListMealRequests(from, to, status) {
+  const params = new URLSearchParams({ from, to });
+  if (status) params.set("status", status);
+  return apiFetch(`/api/admin/meal-requests?${params.toString()}`, {
+    method: "GET",
+  });
+}
+
+export async function adminDecideMealRequest(id, decision, reason) {
+  return apiFetch("/api/admin/meal-requests/decide", {
+    method: "POST",
+    body: JSON.stringify({ id, decision, reason }),
+  });
+}
+
 export async function adminApplyDefaults(payload) {
   return apiFetch("/api/admin/preferences/apply", {
     method: "POST",
@@ -186,6 +252,14 @@ export async function setStaffChoice(employeeId, date, mealType, wantMeal, reaso
 
 export async function getDailyReport(date) {
   return apiFetch(`/api/reports/daily?date=${encodeURIComponent(date)}`, {
+    method: "GET",
+  });
+}
+
+export async function getDailyReportDetails(date, view, mealType) {
+  const params = new URLSearchParams({ date, view });
+  if (mealType) params.set("mealType", mealType);
+  return apiFetch(`/api/reports/daily/details?${params.toString()}`, {
     method: "GET",
   });
 }

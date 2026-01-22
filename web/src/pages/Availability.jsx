@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { applyServiceDayTemplate, getServiceDays, updateServiceDay } from "../lib/api.js";
-import { todayStr } from "../lib/date.js";
+import { applyAvailabilityTemplate, getServiceDays, updateServiceDay } from "../lib/api.js";
 
 function formatLocalDate(date) {
   const year = date.getFullYear();
@@ -9,21 +8,22 @@ function formatLocalDate(date) {
   return `${year}-${month}-${day}`;
 }
 
-function addDays(dateStr, days) {
-  const [year, month, day] = dateStr.split("-").map((part) => Number(part));
-  const date = new Date(year, month - 1, day);
-  date.setDate(date.getDate() + days);
-  return formatLocalDate(date);
+function addDaysToDate(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
 }
 
 export default function Availability() {
-  const today = todayStr();
   const [monthDate, setMonthDate] = useState(() => new Date());
   const [serviceDays, setServiceDays] = useState({});
   const [selectedDate, setSelectedDate] = useState("");
   const [formState, setFormState] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [isApplying, setIsApplying] = useState(false);
+  const [keepSundaysClosed, setKeepSundaysClosed] = useState(true);
+  const [overwriteExisting, setOverwriteExisting] = useState(false);
 
   const range = useMemo(() => {
     const start = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
@@ -99,18 +99,54 @@ export default function Availability() {
   const handleApplyTemplate = async (days) => {
     setMessage("");
     setError("");
+    if (!formState) {
+      setError("Select a date first");
+      return;
+    }
+    setIsApplying(true);
     try {
-      const to = addDays(today, days - 1);
-      await applyServiceDayTemplate(today, to);
+      const startDate = formatLocalDate(addDaysToDate(new Date(), 1));
+      const template = {
+        officeOpen: !!formState.isOfficeOpen,
+        breakfastServed: !!formState.breakfastServed,
+        lunchServed: !!formState.lunchServed,
+        dinnerServed: !!formState.dinnerServed,
+      };
+      const result = await applyAvailabilityTemplate({
+        days,
+        startDate,
+        template,
+        keepSundaysClosed,
+        overwriteExisting,
+      });
       const refreshed = await getServiceDays(range.from, range.to);
       const map = {};
       for (const day of refreshed || []) {
         map[day.date] = day;
       }
       setServiceDays(map);
-      setMessage("Template applied");
+      if (selectedDate) {
+        const refreshedDay = map[selectedDate];
+        if (refreshedDay) {
+          setFormState(refreshedDay);
+        }
+      }
+      if (result?.startDate && result?.endDate) {
+        const updatedCount = result?.updatedCount ?? 0;
+        const skippedCount = result?.skippedCount ?? 0;
+        setMessage(
+          `Template applied (${result.startDate} → ${result.endDate}). Updated ${updatedCount} days, skipped ${skippedCount} days.`
+        );
+        if (updatedCount === 0) {
+          setError("No days updated (all days were skipped due to manual edits).");
+        }
+      } else {
+        setMessage("Template applied");
+      }
     } catch (err) {
       setError(err.message || "Failed");
+    } finally {
+      setIsApplying(false);
     }
   };
 
@@ -147,16 +183,57 @@ export default function Availability() {
           </button>
         </div>
         <div className="template-actions">
-          <button className="button" onClick={() => handleApplyTemplate(30)}>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={keepSundaysClosed}
+              onChange={(event) => setKeepSundaysClosed(event.target.checked)}
+            />
+            Keep Sundays closed
+          </label>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={overwriteExisting}
+              onChange={(event) => setOverwriteExisting(event.target.checked)}
+            />
+            Overwrite existing days
+          </label>
+          <button
+            type="button"
+            className="button"
+            disabled={isApplying}
+            onClick={(event) => {
+              event.preventDefault();
+              handleApplyTemplate(30);
+            }}
+          >
             Apply template to next 30 days
           </button>
-          <button className="button" onClick={() => handleApplyTemplate(60)}>
+          <button
+            type="button"
+            className="button"
+            disabled={isApplying}
+            onClick={(event) => {
+              event.preventDefault();
+              handleApplyTemplate(60);
+            }}
+          >
             Apply template to next 60 days
           </button>
-          <button className="button" onClick={() => handleApplyTemplate(90)}>
+          <button
+            type="button"
+            className="button"
+            disabled={isApplying}
+            onClick={(event) => {
+              event.preventDefault();
+              handleApplyTemplate(90);
+            }}
+          >
             Apply template to next 90 days
           </button>
         </div>
+        {isApplying ? <div className="message">Applying...</div> : null}
       </div>
 
       <div className="calendar-grid">
