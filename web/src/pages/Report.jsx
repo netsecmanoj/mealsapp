@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { getDailyReport, getDailyReportDetails } from "../lib/api.js";
 import { todayStr } from "../lib/date.js";
 
@@ -13,6 +13,7 @@ export default function Report() {
   const [detailView, setDetailView] = useState("combined");
   const [detailMealType, setDetailMealType] = useState("BREAKFAST");
   const [detailRows, setDetailRows] = useState([]);
+  const [detailVisitors, setDetailVisitors] = useState([]);
   const [detailMeta, setDetailMeta] = useState(null);
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
@@ -49,6 +50,7 @@ export default function Report() {
         detailView === "meal" ? detailMealType : undefined
       );
       setDetailRows(data?.rows || []);
+      setDetailVisitors(data?.visitors || []);
       setDetailMeta({
         officeOpen: data?.officeOpen ?? true,
         serviceDay: data?.serviceDay || null,
@@ -56,6 +58,7 @@ export default function Report() {
       setMessage("Details loaded");
     } catch (err) {
       setDetailRows([]);
+      setDetailVisitors([]);
       setDetailMeta(null);
       setError(err.message || "Failed");
     }
@@ -103,15 +106,10 @@ export default function Report() {
     URL.revokeObjectURL(url);
   };
 
-  const formatDecision = (cell) => {
-    if (!cell) return "";
-    if (cell.final === "NA") {
-      return cell.requestStatus ? `N/A (${cell.requestStatus})` : "N/A";
-    }
-    if (cell.final === "NOT_SET") return "Not set";
-    if (cell.source === "EXPLICIT") return `${cell.final} (Explicit)`;
-    if (cell.source === "DEFAULT") return `${cell.final} (Default)`;
-    return cell.final;
+  const formatSelected = (cell) => {
+    if (!cell || cell.selected === "NA") return "N/A";
+    if (cell.selected === "NOT_SET") return "Not set";
+    return cell.selected;
   };
 
   const filteredRows = detailRows.filter((row) => {
@@ -123,34 +121,97 @@ export default function Report() {
     );
   });
 
+  const detailCounts = useMemo(() => {
+    const totalEmployees = detailRows.length;
+    const shownEmployees = filteredRows.length;
+    const counts = {
+      totalEmployees,
+      shownEmployees,
+      meals: {
+        BREAKFAST: { yes: 0, no: 0, notSet: 0, requests: {} },
+        LUNCH: { yes: 0, no: 0, notSet: 0, requests: {} },
+        DINNER: { yes: 0, no: 0, notSet: 0, requests: {} },
+      },
+    };
+    const mealsToCount = detailView === "meal" ? [detailMealType] : ["BREAKFAST", "LUNCH", "DINNER"];
+    for (const row of filteredRows) {
+      for (const meal of mealsToCount) {
+        const cell = row[meal.toLowerCase()];
+        if (!cell) continue;
+        if (cell.selected === "YES") counts.meals[meal].yes += 1;
+        else if (cell.selected === "NO") counts.meals[meal].no += 1;
+        else if (cell.selected === "NOT_SET") counts.meals[meal].notSet += 1;
+        if (cell.final === "NA" && cell.requestStatus) {
+          const key = cell.requestStatus;
+          counts.meals[meal].requests[key] = (counts.meals[meal].requests[key] || 0) + 1;
+        }
+      }
+    }
+    return counts;
+  }, [detailRows, filteredRows, detailMealType, detailView]);
+
   const handleExportDetails = () => {
-    if (!detailRows.length) return;
+    if (!detailRows.length && !detailVisitors.length) return;
     let rows = [];
     if (detailView === "combined") {
       rows = [
-        ["Employee ID", "Name", "Department", "Breakfast", "Lunch", "Dinner"],
+        [
+          "Employee ID",
+          "Name",
+          "Department",
+          "Breakfast Selected",
+          "Lunch Selected",
+          "Dinner Selected",
+        ],
         ...filteredRows.map((row) => [
           row.employeeId,
           row.name,
           row.department,
-          formatDecision(row.breakfast),
-          formatDecision(row.lunch),
-          formatDecision(row.dinner),
+          row.breakfast?.selected || "",
+          row.lunch?.selected || "",
+          row.dinner?.selected || "",
         ]),
       ];
+      if (detailVisitors.length) {
+        rows.push([]);
+        rows.push(["VISITORS"]);
+        rows.push(["Name", "Phone", "Company", "Breakfast", "Lunch", "Dinner"]);
+        rows.push(
+          ...detailVisitors.map((visitor) => [
+            visitor.name,
+            visitor.phone || "",
+            visitor.company || "",
+            visitor.breakfast || "",
+            visitor.lunch || "",
+            visitor.dinner || "",
+          ])
+        );
+      }
     } else {
       const key = detailMealType.toLowerCase();
       rows = [
-        ["Employee ID", "Name", "Department", "Final", "Source", "Request Status"],
+        ["Employee ID", "Name", "Department", "Selected", "Request Status"],
         ...filteredRows.map((row) => [
           row.employeeId,
           row.name,
           row.department,
-          row[key]?.final || "",
-          row[key]?.source || "",
+          row[key]?.selected || "",
           row[key]?.requestStatus || "",
         ]),
       ];
+      if (detailVisitors.length) {
+        rows.push([]);
+        rows.push(["VISITORS"]);
+        rows.push(["Name", "Phone", "Company", "Selected"]);
+        rows.push(
+          ...detailVisitors.map((visitor) => [
+            visitor.name,
+            visitor.phone || "",
+            visitor.company || "",
+            visitor[key] || "",
+          ])
+        );
+      }
     }
     const csv = rows.map((row) => row.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -334,6 +395,31 @@ export default function Report() {
             <h2>Details</h2>
             <div className="report-date">{date}</div>
           </div>
+          <div className="count-bar">
+            <div className="count-chip">
+              Employees: {detailCounts.shownEmployees} shown / {detailCounts.totalEmployees} total
+            </div>
+            {detailView === "meal" ? (
+              <>
+                <div className="count-chip">YES: {detailCounts.meals[detailMealType].yes}</div>
+                <div className="count-chip">NO: {detailCounts.meals[detailMealType].no}</div>
+                <div className="count-chip">Not set: {detailCounts.meals[detailMealType].notSet}</div>
+                {Object.keys(detailCounts.meals[detailMealType].requests).map((status) => (
+                  <div className="count-chip" key={status}>
+                    {status}: {detailCounts.meals[detailMealType].requests[status]}
+                  </div>
+                ))}
+              </>
+            ) : (
+              <>
+                {["BREAKFAST", "LUNCH", "DINNER"].map((meal) => (
+                  <div className="count-chip" key={meal}>
+                    {meal}: YES {detailCounts.meals[meal].yes} · NO {detailCounts.meals[meal].no} · Not set {detailCounts.meals[meal].notSet}
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
           {detailMeta ? (
             <div className="report-meta">
               Office open: {detailMeta.officeOpen ? "Yes" : "No"} · Breakfast:{" "}
@@ -349,9 +435,9 @@ export default function Report() {
                   <th>Employee ID</th>
                   <th>Name</th>
                   <th>Department</th>
-                  <th>Breakfast</th>
-                  <th>Lunch</th>
-                  <th>Dinner</th>
+                  <th>Breakfast Selected</th>
+                  <th>Lunch Selected</th>
+                  <th>Dinner Selected</th>
                 </tr>
               </thead>
               <tbody>
@@ -360,9 +446,9 @@ export default function Report() {
                     <td>{row.employeeId}</td>
                     <td>{row.name}</td>
                     <td>{row.department}</td>
-                    <td>{formatDecision(row.breakfast)}</td>
-                    <td>{formatDecision(row.lunch)}</td>
-                    <td>{formatDecision(row.dinner)}</td>
+                    <td>{formatSelected(row.breakfast)}</td>
+                    <td>{formatSelected(row.lunch)}</td>
+                    <td>{formatSelected(row.dinner)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -374,8 +460,7 @@ export default function Report() {
                   <th>Employee ID</th>
                   <th>Name</th>
                   <th>Department</th>
-                  <th>Final</th>
-                  <th>Source</th>
+                  <th>Selected</th>
                   <th>Request Status</th>
                 </tr>
               </thead>
@@ -388,8 +473,7 @@ export default function Report() {
                       <td>{row.employeeId}</td>
                       <td>{row.name}</td>
                       <td>{row.department}</td>
-                      <td>{cell?.final || ""}</td>
-                      <td>{cell?.source || ""}</td>
+                      <td>{cell?.selected || ""}</td>
                       <td>{cell?.requestStatus || ""}</td>
                     </tr>
                   );
@@ -397,6 +481,47 @@ export default function Report() {
               </tbody>
             </table>
           )}
+          {detailVisitors.length ? (
+            <div className="card">
+              <h3>Visitors</h3>
+              <table className="report-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Phone</th>
+                    <th>Company</th>
+                    {detailView === "combined" ? (
+                      <>
+                        <th>Breakfast</th>
+                        <th>Lunch</th>
+                        <th>Dinner</th>
+                      </>
+                    ) : (
+                      <th>Selected</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailVisitors.map((visitor) => (
+                    <tr key={visitor.id}>
+                      <td>{visitor.name}</td>
+                      <td>{visitor.phone || ""}</td>
+                      <td>{visitor.company || ""}</td>
+                      {detailView === "combined" ? (
+                        <>
+                          <td>{visitor.breakfast || ""}</td>
+                          <td>{visitor.lunch || ""}</td>
+                          <td>{visitor.dinner || ""}</td>
+                        </>
+                      ) : (
+                        <td>{visitor[detailMealType.toLowerCase()] || ""}</td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
