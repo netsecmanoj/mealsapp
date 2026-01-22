@@ -4,6 +4,13 @@ import { MealType, PrismaClient, Role } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 async function main() {
   const pinHash = await bcrypt.hash("1234", 10);
 
@@ -123,6 +130,54 @@ async function main() {
       update: {
         value: setting.value,
         updatedById: idByEmployeeId.A1001 ?? null,
+      },
+    });
+  }
+
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = formatLocalDate(tomorrow);
+
+  await prisma.serviceDay.upsert({
+    where: { date: tomorrowStr },
+    create: {
+      date: tomorrowStr,
+      isOfficeOpen: true,
+      breakfastServed: true,
+      lunchServed: true,
+      dinnerServed: false,
+      updatedById: idByEmployeeId.A1001 ?? null,
+      note: "Dinner not served (seed sample)",
+    },
+    update: {
+      isOfficeOpen: true,
+      breakfastServed: true,
+      lunchServed: true,
+      dinnerServed: false,
+      updatedById: idByEmployeeId.A1001 ?? null,
+      note: "Dinner not served (seed sample)",
+    },
+  });
+
+  if (idByEmployeeId.E4001) {
+    await prisma.mealRequest.upsert({
+      where: {
+        userId_date_mealType: {
+          userId: idByEmployeeId.E4001,
+          date: tomorrowStr,
+          mealType: MealType.DINNER,
+        },
+      },
+      create: {
+        userId: idByEmployeeId.E4001,
+        date: tomorrowStr,
+        mealType: MealType.DINNER,
+        status: "PENDING",
+        note: "Requesting dinner for late shift",
+      },
+      update: {
+        status: "PENDING",
+        note: "Requesting dinner for late shift",
       },
     });
   }

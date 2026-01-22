@@ -1,13 +1,20 @@
 import { useState } from "react";
-import { getDailyReport } from "../lib/api.js";
+import { getDailyReport, getDailyReportDetails } from "../lib/api.js";
 import { todayStr } from "../lib/date.js";
 
 export default function Report() {
   const [date, setDate] = useState(todayStr());
   const [counts, setCounts] = useState(null);
   const [served, setServed] = useState(null);
+  const [approvedRequests, setApprovedRequests] = useState(null);
   const [checkins, setCheckins] = useState(null);
   const [waste, setWaste] = useState(null);
+  const [mode, setMode] = useState("summary");
+  const [detailView, setDetailView] = useState("combined");
+  const [detailMealType, setDetailMealType] = useState("BREAKFAST");
+  const [detailRows, setDetailRows] = useState([]);
+  const [detailMeta, setDetailMeta] = useState(null);
+  const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -18,14 +25,38 @@ export default function Report() {
       const data = await getDailyReport(date);
       setCounts(data?.counts || null);
       setServed(data?.served || null);
+      setApprovedRequests(data?.approvedRequests || null);
       setCheckins(data?.checkins || null);
       setWaste(data?.waste || null);
       setMessage("Saved");
     } catch (err) {
       setCounts(null);
       setServed(null);
+      setApprovedRequests(null);
       setCheckins(null);
       setWaste(null);
+      setError(err.message || "Failed");
+    }
+  };
+
+  const handleFetchDetails = async () => {
+    setMessage("");
+    setError("");
+    try {
+      const data = await getDailyReportDetails(
+        date,
+        detailView,
+        detailView === "meal" ? detailMealType : undefined
+      );
+      setDetailRows(data?.rows || []);
+      setDetailMeta({
+        officeOpen: data?.officeOpen ?? true,
+        serviceDay: data?.serviceDay || null,
+      });
+      setMessage("Details loaded");
+    } catch (err) {
+      setDetailRows([]);
+      setDetailMeta(null);
       setError(err.message || "Failed");
     }
   };
@@ -33,10 +64,34 @@ export default function Report() {
   const handleExport = () => {
     if (!counts || !served) return;
     const rows = [
-      ["Meal", "Planned Yes", "Planned No", "Not Set", "Checkins", "Waste"],
-      ["Breakfast", counts.BREAKFAST?.yes ?? "", counts.BREAKFAST?.no ?? "", counts.BREAKFAST?.notSet ?? "", checkins?.BREAKFAST ?? "", waste?.BREAKFAST ?? ""],
-      ["Lunch", counts.LUNCH?.yes ?? "", counts.LUNCH?.no ?? "", counts.LUNCH?.notSet ?? "", checkins?.LUNCH ?? "", waste?.LUNCH ?? ""],
-      ["Dinner", counts.DINNER?.yes ?? "", counts.DINNER?.no ?? "", counts.DINNER?.notSet ?? "", checkins?.DINNER ?? "", waste?.DINNER ?? ""],
+      ["Meal", "Planned Yes", "Planned No", "Not Set", "Approved Requests", "Checkins", "Waste"],
+      [
+        "Breakfast",
+        counts.BREAKFAST?.yes ?? "",
+        counts.BREAKFAST?.no ?? "",
+        counts.BREAKFAST?.notSet ?? "",
+        approvedRequests?.BREAKFAST ?? "",
+        checkins?.BREAKFAST ?? "",
+        waste?.BREAKFAST ?? "",
+      ],
+      [
+        "Lunch",
+        counts.LUNCH?.yes ?? "",
+        counts.LUNCH?.no ?? "",
+        counts.LUNCH?.notSet ?? "",
+        approvedRequests?.LUNCH ?? "",
+        checkins?.LUNCH ?? "",
+        waste?.LUNCH ?? "",
+      ],
+      [
+        "Dinner",
+        counts.DINNER?.yes ?? "",
+        counts.DINNER?.no ?? "",
+        counts.DINNER?.notSet ?? "",
+        approvedRequests?.DINNER ?? "",
+        checkins?.DINNER ?? "",
+        waste?.DINNER ?? "",
+      ],
     ];
     const csv = rows.map((row) => row.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -44,6 +99,65 @@ export default function Report() {
     const link = document.createElement("a");
     link.href = url;
     link.download = `meal-report-${date}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const formatDecision = (cell) => {
+    if (!cell) return "";
+    if (cell.final === "NA") {
+      return cell.requestStatus ? `N/A (${cell.requestStatus})` : "N/A";
+    }
+    if (cell.final === "NOT_SET") return "Not set";
+    if (cell.source === "EXPLICIT") return `${cell.final} (Explicit)`;
+    if (cell.source === "DEFAULT") return `${cell.final} (Default)`;
+    return cell.final;
+  };
+
+  const filteredRows = detailRows.filter((row) => {
+    if (!search.trim()) return true;
+    const term = search.toLowerCase();
+    return (
+      row.employeeId?.toLowerCase().includes(term) ||
+      row.name?.toLowerCase().includes(term)
+    );
+  });
+
+  const handleExportDetails = () => {
+    if (!detailRows.length) return;
+    let rows = [];
+    if (detailView === "combined") {
+      rows = [
+        ["Employee ID", "Name", "Department", "Breakfast", "Lunch", "Dinner"],
+        ...filteredRows.map((row) => [
+          row.employeeId,
+          row.name,
+          row.department,
+          formatDecision(row.breakfast),
+          formatDecision(row.lunch),
+          formatDecision(row.dinner),
+        ]),
+      ];
+    } else {
+      const key = detailMealType.toLowerCase();
+      rows = [
+        ["Employee ID", "Name", "Department", "Final", "Source", "Request Status"],
+        ...filteredRows.map((row) => [
+          row.employeeId,
+          row.name,
+          row.department,
+          row[key]?.final || "",
+          row[key]?.source || "",
+          row[key]?.requestStatus || "",
+        ]),
+      ];
+    }
+    const csv = rows.map((row) => row.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `meal-report-details-${date}.csv`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -63,6 +177,20 @@ export default function Report() {
     <div className="app">
       <div className="card">
         <h2>Daily Report</h2>
+        <div className="pill-row">
+          <button
+            className={`pill ${mode === "summary" ? "active" : ""}`}
+            onClick={() => setMode("summary")}
+          >
+            Summary
+          </button>
+          <button
+            className={`pill ${mode === "details" ? "active" : ""}`}
+            onClick={() => setMode("details")}
+          >
+            Details
+          </button>
+        </div>
         <div className="field">
           <label htmlFor="date">Date</label>
           <input
@@ -72,23 +200,73 @@ export default function Report() {
             onChange={(event) => setDate(event.target.value)}
           />
         </div>
-        <button className="button" onClick={handleFetch}>
-          Get Report
-        </button>
-        <button className="button secondary" onClick={handleExport} disabled={!counts}>
-          Export CSV
-        </button>
-        {counts ? (
-          <button className="button secondary" onClick={handleCopy}>
-            Copy report to clipboard
-          </button>
-        ) : null}
+        {mode === "summary" ? (
+          <>
+            <button className="button" onClick={handleFetch}>
+              Get Report
+            </button>
+            <button className="button secondary" onClick={handleExport} disabled={!counts}>
+              Export CSV
+            </button>
+            {counts ? (
+              <button className="button secondary" onClick={handleCopy}>
+                Copy report to clipboard
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div className="field">
+              <label htmlFor="view">View</label>
+              <select
+                id="view"
+                value={detailView}
+                onChange={(event) => setDetailView(event.target.value)}
+              >
+                <option value="combined">Combined</option>
+                <option value="meal">Single meal</option>
+              </select>
+            </div>
+            {detailView === "meal" ? (
+              <div className="field">
+                <label htmlFor="meal">Meal</label>
+                <select
+                  id="meal"
+                  value={detailMealType}
+                  onChange={(event) => setDetailMealType(event.target.value)}
+                >
+                  <option value="BREAKFAST">Breakfast</option>
+                  <option value="LUNCH">Lunch</option>
+                  <option value="DINNER">Dinner</option>
+                </select>
+              </div>
+            ) : null}
+            <div className="field">
+              <label htmlFor="search">Search (employeeId or name)</label>
+              <input
+                id="search"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
+            <button className="button" onClick={handleFetchDetails}>
+              Get Details
+            </button>
+            <button
+              className="button secondary"
+              onClick={handleExportDetails}
+              disabled={!detailRows.length}
+            >
+              Export Detail CSV
+            </button>
+          </>
+        )}
       </div>
 
       {message ? <div className="message success">{message}</div> : null}
       {error ? <div className="message error">{error}</div> : null}
 
-      {counts ? (
+      {mode === "summary" && counts ? (
         <div className="card">
           <div className="report-header">
             <h2>Report Date</h2>
@@ -97,7 +275,7 @@ export default function Report() {
         </div>
       ) : null}
 
-      {counts ? (
+      {mode === "summary" && counts ? (
         <div className="cards">
           <div className="report-card">
             <h3>Breakfast</h3>
@@ -110,6 +288,9 @@ export default function Report() {
               <div className="report-meta">
                 Check-ins: {checkins?.BREAKFAST ?? 0} · Waste: {waste?.BREAKFAST ?? 0}
               </div>
+            ) : null}
+            {approvedRequests ? (
+              <div className="report-meta">Approved requests: {approvedRequests.BREAKFAST ?? 0}</div>
             ) : null}
           </div>
           <div className="report-card">
@@ -124,6 +305,9 @@ export default function Report() {
                 Check-ins: {checkins?.LUNCH ?? 0} · Waste: {waste?.LUNCH ?? 0}
               </div>
             ) : null}
+            {approvedRequests ? (
+              <div className="report-meta">Approved requests: {approvedRequests.LUNCH ?? 0}</div>
+            ) : null}
           </div>
           <div className="report-card">
             <h3>Dinner</h3>
@@ -137,7 +321,82 @@ export default function Report() {
                 Check-ins: {checkins?.DINNER ?? 0} · Waste: {waste?.DINNER ?? 0}
               </div>
             ) : null}
+            {approvedRequests ? (
+              <div className="report-meta">Approved requests: {approvedRequests.DINNER ?? 0}</div>
+            ) : null}
           </div>
+        </div>
+      ) : null}
+
+      {mode === "details" ? (
+        <div className="card">
+          <div className="report-header">
+            <h2>Details</h2>
+            <div className="report-date">{date}</div>
+          </div>
+          {detailMeta ? (
+            <div className="report-meta">
+              Office open: {detailMeta.officeOpen ? "Yes" : "No"} · Breakfast:{" "}
+              {detailMeta.serviceDay?.breakfastServed ? "Yes" : "No"} · Lunch:{" "}
+              {detailMeta.serviceDay?.lunchServed ? "Yes" : "No"} · Dinner:{" "}
+              {detailMeta.serviceDay?.dinnerServed ? "Yes" : "No"}
+            </div>
+          ) : null}
+          {detailView === "combined" ? (
+            <table className="report-table">
+              <thead>
+                <tr>
+                  <th>Employee ID</th>
+                  <th>Name</th>
+                  <th>Department</th>
+                  <th>Breakfast</th>
+                  <th>Lunch</th>
+                  <th>Dinner</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.map((row) => (
+                  <tr key={row.employeeId}>
+                    <td>{row.employeeId}</td>
+                    <td>{row.name}</td>
+                    <td>{row.department}</td>
+                    <td>{formatDecision(row.breakfast)}</td>
+                    <td>{formatDecision(row.lunch)}</td>
+                    <td>{formatDecision(row.dinner)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <table className="report-table">
+              <thead>
+                <tr>
+                  <th>Employee ID</th>
+                  <th>Name</th>
+                  <th>Department</th>
+                  <th>Final</th>
+                  <th>Source</th>
+                  <th>Request Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.map((row) => {
+                  const key = detailMealType.toLowerCase();
+                  const cell = row[key];
+                  return (
+                    <tr key={row.employeeId}>
+                      <td>{row.employeeId}</td>
+                      <td>{row.name}</td>
+                      <td>{row.department}</td>
+                      <td>{cell?.final || ""}</td>
+                      <td>{cell?.source || ""}</td>
+                      <td>{cell?.requestStatus || ""}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       ) : null}
     </div>

@@ -22,6 +22,13 @@ enum MealType {
   DINNER
 }
 
+enum MealRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 enum Source {
   SELF
   SUPERVISOR
@@ -49,6 +56,8 @@ model User {
   recordedCheckins MealCheckin[] @relation("MealCheckinRecordedBy")
   auditLogs AuditLog[] @relation("AuditActor")
   appSettings AppSetting[] @relation("AppSettingUpdatedBy")
+  mealRequests MealRequest[]
+  decidedMealRequests MealRequest[] @relation("MealRequestDecidedBy")
 }
 
 model MealChoice {
@@ -152,4 +161,24 @@ model AppSetting {
   updatedAt   DateTime @updatedAt
   updatedById String?
   updatedBy   User?    @relation("AppSettingUpdatedBy", fields: [updatedById], references: [id])
+}
+
+model MealRequest {
+  id             String            @id @default(cuid())
+  userId         String
+  date           String
+  mealType       MealType
+  status         MealRequestStatus @default(PENDING)
+  note           String?
+  decidedById    String?
+  decidedAt      DateTime?
+  decisionReason String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  user      User  @relation(fields: [userId], references: [id])
+  decidedBy User? @relation("MealRequestDecidedBy", fields: [decidedById], references: [id])
+
+  @@unique([userId, date, mealType])
+  @@index([date, mealType, status])
 }
