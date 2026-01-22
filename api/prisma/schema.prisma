@@ -58,6 +58,8 @@ model User {
   appSettings AppSetting[] @relation("AppSettingUpdatedBy")
   mealRequests MealRequest[]
   decidedMealRequests MealRequest[] @relation("MealRequestDecidedBy")
+  createdVisitors Visitor[] @relation("VisitorCreatedBy")
+  visitorMealChoices VisitorMealChoice[] @relation("VisitorMealCreatedBy")
 }
 
 model MealChoice {
@@ -181,4 +183,35 @@ model MealRequest {
 
   @@unique([userId, date, mealType])
   @@index([date, mealType, status])
+}
+
+model Visitor {
+  id          String   @id @default(cuid())
+  name        String
+  phone       String?  @unique
+  company     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+
+  createdBy   User?               @relation("VisitorCreatedBy", fields: [createdById], references: [id])
+  meals       VisitorMealChoice[]
+}
+
+model VisitorMealChoice {
+  id             String   @id @default(cuid())
+  visitorId      String
+  date           String
+  mealType       MealType
+  wantMeal       Boolean
+  createdById    String?
+  overrideReason String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  visitor   Visitor @relation(fields: [visitorId], references: [id])
+  createdBy User?   @relation("VisitorMealCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([visitorId, date, mealType])
+  @@index([date, mealType])
 }

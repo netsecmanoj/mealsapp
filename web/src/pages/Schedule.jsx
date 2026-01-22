@@ -181,13 +181,11 @@ export default function Schedule() {
                 ? "Meal availability: YES"
                 : "Meal availability: NO";
             const choiceStatus = item?.choiceStatus || item?.status;
-            const defaultHint = item?.defaultHintWantMeal;
+            const preferenceHint = item?.preferenceHintWantMeal;
             const status = servedGlobal
               ? choiceStatus === "EXPLICIT"
                 ? `Selected: ${item?.wantMeal ? "YES" : "NO"}`
-                : choiceStatus === "DEFAULT"
-                  ? `Default preference: ${defaultHint ? "YES" : "NO"} (tap to override)`
-                  : "Not set"
+                : "Not set"
               : officeOpen
                 ? item?.requestStatus === "PENDING"
                   ? "Request pending"
@@ -220,6 +218,9 @@ export default function Schedule() {
                     Availability: {availabilityText}
                   </div>
                   <div className="row-status">{status}</div>
+                  {preferenceHint !== null && preferenceHint !== undefined ? (
+                    <div className="row-status">Preference: {preferenceHint ? "YES" : "NO"}</div>
+                  ) : null}
                   {overrideLabel ? <div className="row-badge">{overrideLabel}</div> : null}
                   {cutoffLabel && servedGlobal ? (
                     <div className="row-lock">{cutoffLabel}</div>

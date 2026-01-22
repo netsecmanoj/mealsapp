@@ -216,6 +216,35 @@ export async function adminApplyDefaults(payload) {
   });
 }
 
+export async function searchVisitors(query) {
+  const params = new URLSearchParams();
+  if (query) params.set("q", query);
+  return apiFetch(`/api/supervisor/visitors/search?${params.toString()}`, {
+    method: "GET",
+  });
+}
+
+export async function createVisitor(payload) {
+  return apiFetch("/api/supervisor/visitors", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getVisitorMeals(visitorId, date) {
+  const params = new URLSearchParams({ date });
+  return apiFetch(`/api/supervisor/visitors/${visitorId}/meals?${params.toString()}`, {
+    method: "GET",
+  });
+}
+
+export async function setVisitorMeals(visitorId, payload) {
+  return apiFetch(`/api/supervisor/visitors/${visitorId}/meals`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getSettings() {
   return apiFetch("/api/admin/settings", { method: "GET" });
 }
@@ -251,7 +280,8 @@ export async function setStaffChoice(employeeId, date, mealType, wantMeal, reaso
 }
 
 export async function getDailyReport(date) {
-  return apiFetch(`/api/reports/daily?date=${encodeURIComponent(date)}`, {
+  const params = new URLSearchParams({ date });
+  return apiFetch(`/api/reports/daily?${params.toString()}`, {
     method: "GET",
   });
 }

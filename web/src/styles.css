@@ -345,6 +345,22 @@ a {
   color: var(--muted);
 }
 
+.count-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.count-chip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  font-weight: 700;
+  font-size: 12px;
+}
+
 .report-header {
   display: flex;
   align-items: center;
