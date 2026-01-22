@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { clearSession, getMyChoices, getSession, setMyChoice } from "../lib/api.js";
+import { clearSession, getEffectiveChoices, getSession, setMyChoice } from "../lib/api.js";
 import { todayStr, tomorrowStr } from "../lib/date.js";
 
 const mealTypes = ["BREAKFAST", "LUNCH", "DINNER"];
+const keyFor = (date, mealType) => `${date}|${mealType}`;
 
 export default function Schedule() {
   const navigate = useNavigate();
@@ -24,10 +25,10 @@ export default function Schedule() {
       try {
         const from = todayStr();
         const to = tomorrowStr();
-        const data = await getMyChoices(from, to);
+        const choicesData = await getEffectiveChoices(from, to);
         const next = {};
-        for (const item of data || []) {
-          next[`${item.date}|${item.mealType}`] = item.wantMeal;
+        for (const item of choicesData || []) {
+          next[keyFor(item.date, item.mealType)] = item;
         }
         setChoices(next);
       } catch (err) {
@@ -45,13 +46,33 @@ export default function Schedule() {
       await setMyChoice(date, mealType, wantMeal);
       setChoices((prev) => ({
         ...prev,
-        [`${date}|${mealType}`]: wantMeal,
+        [keyFor(date, mealType)]: {
+          ...(prev[keyFor(date, mealType)] || {}),
+          date,
+          mealType,
+          status: "EXPLICIT",
+          wantMeal,
+          served: true,
+        },
       }));
       setMessage("Saved");
     } catch (err) {
       if (err?.message === "Cutoff passed") {
-        setLocked((prev) => ({ ...prev, [`${date}|${mealType}`]: true }));
+        setLocked((prev) => ({ ...prev, [keyFor(date, mealType)]: true }));
         setError("Cutoff passed");
+      } else if (err?.message === "Meal not served") {
+        setChoices((prev) => ({
+          ...prev,
+          [keyFor(date, mealType)]: {
+            ...(prev[keyFor(date, mealType)] || {}),
+            date,
+            mealType,
+            status: "NA",
+            wantMeal: null,
+            served: false,
+          },
+        }));
+        setError("Meal not served");
       } else {
         setError(err.message || "Failed");
       }
@@ -81,39 +102,42 @@ export default function Schedule() {
             {section.title} ({section.date})
           </h2>
           {mealTypes.map((mealType) => {
-            const key = `${section.date}|${mealType}`;
-            const value = choices[key];
+            const key = keyFor(section.date, mealType);
+            const item = choices[key];
+            const value = item?.wantMeal ?? null;
             const isLocked = locked[key];
             const status =
-              value === true
-                ? "Selected: YES"
-                : value === false
-                  ? "Selected: NO"
-                  : "Not set";
-            const cutoffLabel =
-              mealType === "BREAKFAST"
-                ? "Locked after 09:00"
-                : mealType === "LUNCH"
-                  ? "Locked after 11:00"
-                  : "Locked after 17:00";
+              item?.status === "EXPLICIT"
+                ? `Selected: ${value ? "YES" : "NO"}`
+                : item?.status === "DEFAULT"
+                  ? `Default: ${value ? "YES" : "NO"}`
+                  : item?.status === "NA"
+                    ? "Not served / Office closed"
+                    : "Not set";
+            const cutoffLabel = item?.cutoffLabel ? `Locked after ${item.cutoffLabel}` : null;
+            const overrideLabel = item?.overridden ? "Overridden by HR" : null;
+            const disableButtons = isLocked || item?.status === "NA" || item?.cutoffPassed === true;
             return (
               <div className="row" key={mealType}>
                 <div className="row-left">
                   <div className="row-title">{mealType}</div>
                   <div className="row-status">{status}</div>
-                  <div className="row-lock">{cutoffLabel}</div>
+                  {overrideLabel ? <div className="row-badge">{overrideLabel}</div> : null}
+                  {cutoffLabel && item?.status !== "NA" ? (
+                    <div className="row-lock">{cutoffLabel}</div>
+                  ) : null}
                 </div>
                 <div className="button-group">
                   <button
                     className={`big-button yes ${value === true ? "selected" : ""}`.trim()}
-                    disabled={isLocked}
+                    disabled={disableButtons}
                     onClick={() => handleChoice(section.date, mealType, true)}
                   >
                     YES
                   </button>
                   <button
                     className={`big-button no ${value === false ? "selected" : ""}`.trim()}
-                    disabled={isLocked}
+                    disabled={disableButtons}
                     onClick={() => handleChoice(section.date, mealType, false)}
                   >
                     NO

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { listUsers, setStaffChoice } from "../lib/api.js";
+import { getSession, listUsers, setStaffChoice } from "../lib/api.js";
 import { todayStr } from "../lib/date.js";
 
 const mealTypes = ["BREAKFAST", "LUNCH", "DINNER"];
@@ -8,8 +8,12 @@ export default function Supervisor() {
   const [users, setUsers] = useState([]);
   const [employeeId, setEmployeeId] = useState("");
   const [date, setDate] = useState(todayStr());
+  const [reason, setReason] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [overrides, setOverrides] = useState({});
+  const role = getSession()?.user?.role;
+  const isHr = role === "HR_ADMIN" || role === "SUPER_ADMIN";
 
   useEffect(() => {
     let active = true;
@@ -35,8 +39,13 @@ export default function Supervisor() {
     setMessage("");
     setError("");
     try {
-      await setStaffChoice(employeeId, date, mealType, wantMeal);
-      setMessage("Saved");
+      const result = await setStaffChoice(employeeId, date, mealType, wantMeal, reason);
+      if (result?.overridden) {
+        setOverrides((prev) => ({ ...prev, [mealType]: true }));
+        setMessage("Saved (Overridden by HR)");
+      } else {
+        setMessage("Saved");
+      }
     } catch (err) {
       setError(err.message || "Failed");
     }
@@ -69,9 +78,22 @@ export default function Supervisor() {
             onChange={(event) => setDate(event.target.value)}
           />
         </div>
+        {isHr ? (
+          <div className="field">
+            <label htmlFor="reason">Override reason (required after cutoff)</label>
+            <input
+              id="reason"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </div>
+        ) : null}
         {mealTypes.map((mealType) => (
           <div className="row" key={mealType}>
-            <div className="row-title">{mealType}</div>
+            <div className="row-left">
+              <div className="row-title">{mealType}</div>
+              {overrides[mealType] ? <div className="row-badge">Overridden by HR</div> : null}
+            </div>
             <div className="button-group">
               <button
                 className="big-button yes"
