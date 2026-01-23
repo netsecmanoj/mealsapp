@@ -1,6 +1,6 @@
 services:
   api:
-    image: ${REGISTRY_IMAGE}/meals-api:${IMAGE_TAG}
+    image: ${REGISTRY_IMAGE:-local}/meals-api:${IMAGE_TAG:-dev}
     build:
       context: ./api
       dockerfile: Dockerfile
@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: ${REGISTRY_IMAGE}/meals-web:${IMAGE_TAG}
+    image: ${REGISTRY_IMAGE:-local}/meals-web:${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: web/Dockerfile

@@ -67,6 +67,7 @@ GitLab provides:
 - Runner must mount the Docker socket into job containers: `/var/run/docker.sock:/var/run/docker.sock`
 - Runner must have Docker CLI available (build jobs use `docker:24` image)
 - If you prefer DinD instead, remove the socket mount, enable privileged mode, and add a DinD service in `.gitlab-ci.yml`
+ - CI pipeline is configured to run only on the `development` branch
 
 ## Server layout (runtime)
 
