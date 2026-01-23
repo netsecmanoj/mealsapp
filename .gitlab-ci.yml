@@ -1,0 +1,61 @@
+stages:
+  - build_api
+  - build_web
+  - deploy
+
+variables:
+  DOCKER_HOST: "tcp://docker:2375"
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: "overlay2"
+
+build_api:
+  stage: build_api
+  image: docker:24.0.5
+  tags:
+    - docker
+    - serverless
+  services:
+    - docker:24.0.5-dind
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -f api/Dockerfile -t "$CI_REGISTRY_IMAGE/meals-api:$CI_COMMIT_SHA" api
+    - docker push "$CI_REGISTRY_IMAGE/meals-api:$CI_COMMIT_SHA"
+
+build_web:
+  stage: build_web
+  image: docker:24.0.5
+  tags:
+    - docker
+    - serverless
+  services:
+    - docker:24.0.5-dind
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -f web/Dockerfile -t "$CI_REGISTRY_IMAGE/meals-web:$CI_COMMIT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE/meals-web:$CI_COMMIT_SHA"
+
+deploy:
+  stage: deploy
+  image: alpine:3.19
+  tags:
+    - docker
+    - serverless
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -p "${SSH_PORT:-22}" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - export DEPLOY_PATH="${DEPLOY_PATH:-/home/ubuntu/meals-app}"
+    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_PATH"
+    - scp -P "${SSH_PORT:-22}" docker-compose.yml "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/docker-compose.yml"
+    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "printf 'REGISTRY_IMAGE=%s\nIMAGE_TAG=%s\n' \"$CI_REGISTRY_IMAGE\" \"$CI_COMMIT_SHA\" > $DEPLOY_PATH/.env"
+    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH && docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY"
+    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH && docker compose pull"
+    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH && docker compose run --rm api npx prisma migrate deploy"
+    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH && docker compose up -d --remove-orphans"

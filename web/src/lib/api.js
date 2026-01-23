@@ -1,4 +1,22 @@
-const baseUrl = import.meta.env.VITE_API_URL;
+const rawBaseUrl = import.meta.env.VITE_API_BASE_URL ?? import.meta.env.VITE_API_URL ?? "/api";
+
+function normalizeBaseUrl(value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return "/api";
+  return trimmed.replace(/\/+$/, "");
+}
+
+function joinUrl(base, path) {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+
+  if (base.endsWith("/api") && normalizedPath.startsWith("/api")) {
+    return `${base}${normalizedPath.slice(4)}`;
+  }
+
+  return `${base}${normalizedPath}`;
+}
+
+const baseUrl = normalizeBaseUrl(rawBaseUrl);
 const sessionKey = "meals.session";
 const legacySessionKey = "session";
 export const SESSION_EVENT = "meals:session";
@@ -44,7 +62,7 @@ async function apiFetch(path, options = {}) {
     headers.set("Authorization", `Bearer ${session.token}`);
   }
 
-  const response = await fetch(`${baseUrl}${path}`, {
+  const response = await fetch(joinUrl(baseUrl, path), {
     ...options,
     headers,
   });
