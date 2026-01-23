@@ -62,6 +62,12 @@ Optional variables:
 GitLab provides:
 - `CI_REGISTRY`, `CI_REGISTRY_IMAGE`, `CI_JOB_TOKEN`
 
+## GitLab Runner prerequisites
+
+- Runner must mount the Docker socket into job containers: `/var/run/docker.sock:/var/run/docker.sock`
+- Runner must have Docker CLI available (build jobs use `docker:24` image)
+- If you prefer DinD instead, remove the socket mount, enable privileged mode, and add a DinD service in `.gitlab-ci.yml`
+
 ## Server layout (runtime)
 
 - `/home/ubuntu/meals-app/docker-compose.yml`
