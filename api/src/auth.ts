@@ -1,13 +1,18 @@
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
-import { Role } from "@prisma/client";
+import prismaPkg from "@prisma/client";
+
+const { Role } = prismaPkg as unknown as {
+  Role: typeof import("@prisma/client").Role;
+};
+type RoleType = (typeof Role)[keyof typeof Role];
 
 export type AuthUser = {
   id: string;
   employeeId: string;
   name: string;
   dept: string | null;
-  role: Role;
+  role: RoleType;
 };
 
 declare global {
@@ -55,7 +60,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
       employeeId: String(payload.employeeId),
       name: String(payload.name),
       dept: payload.dept ? String(payload.dept) : null,
-      role: payload.role as Role,
+      role: payload.role as RoleType,
     };
 
     return next();
@@ -64,7 +69,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   }
 }
 
-export function requireRole(roles: Role[]) {
+export function requireRole(roles: RoleType[]) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(401).json({ error: "Unauthorized" });

@@ -1,8 +1,20 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { MealRequestStatus, MealType, PrismaClient, Role, Source } from "@prisma/client";
+import prismaPkg from "@prisma/client";
 import { authMiddleware, requireRole, signToken } from "./auth.js";
+
+const { PrismaClient, MealRequestStatus, MealType, Role, Source } = prismaPkg as unknown as {
+  PrismaClient: typeof import("@prisma/client").PrismaClient;
+  MealRequestStatus: typeof import("@prisma/client").MealRequestStatus;
+  MealType: typeof import("@prisma/client").MealType;
+  Role: typeof import("@prisma/client").Role;
+  Source: typeof import("@prisma/client").Source;
+};
+type MealRequestStatusType = (typeof MealRequestStatus)[keyof typeof MealRequestStatus];
+type MealTypeType = (typeof MealType)[keyof typeof MealType];
+type RoleType = (typeof Role)[keyof typeof Role];
+type SourceType = (typeof Source)[keyof typeof Source];
 
 const prisma = new PrismaClient();
 const router = express.Router();
@@ -26,7 +38,7 @@ function mustString(value: unknown, name: string): string {
   return resolved;
 }
 
-function mealTypeKey(mealType: MealType): "breakfast" | "lunch" | "dinner" {
+function mealTypeKey(mealType: MealTypeType): "breakfast" | "lunch" | "dinner" {
   if (mealType === MealType.BREAKFAST) return "breakfast";
   if (mealType === MealType.LUNCH) return "lunch";
   return "dinner";
@@ -200,14 +212,14 @@ function isMealServed(serviceDay: {
   breakfastServed: boolean;
   lunchServed: boolean;
   dinnerServed: boolean;
-}, mealType: MealType) {
+}, mealType: MealTypeType) {
   if (!serviceDay.isOfficeOpen) return false;
   if (mealType === MealType.BREAKFAST) return serviceDay.breakfastServed;
   if (mealType === MealType.LUNCH) return serviceDay.lunchServed;
   return serviceDay.dinnerServed;
 }
 
-function getCutoffDate(dateStr: string, mealType: MealType, serviceDay?: any, settings?: any): Date {
+function getCutoffDate(dateStr: string, mealType: MealTypeType, serviceDay?: any, settings?: any): Date {
   const [year, month, day] = dateStr.split("-").map((part) => Number(part));
   const cutoffOverride =
     mealType === MealType.BREAKFAST
@@ -221,7 +233,7 @@ function getCutoffDate(dateStr: string, mealType: MealType, serviceDay?: any, se
   return new Date(year, month - 1, day, cutoff.hour, cutoff.minute, 0, 0);
 }
 
-function getCutoffLabel(mealType: MealType, serviceDay?: any, settings?: any): string {
+function getCutoffLabel(mealType: MealTypeType, serviceDay?: any, settings?: any): string {
   const override =
     mealType === MealType.BREAKFAST
       ? serviceDay?.breakfastCutoff
@@ -335,7 +347,7 @@ async function getEffectiveChoicesForUser(userId: string, from: string, to: stri
       })
     : [];
   const updatedByMap = new Map(updatedByList.map((user) => [user.id, user.role]));
-  const prefsByMeal = new Map<MealType, any[]>();
+  const prefsByMeal = new Map<MealTypeType, any[]>();
   for (const pref of preferences) {
     const list = prefsByMeal.get(pref.mealType) || [];
     list.push(pref);
@@ -1009,7 +1021,7 @@ router.post(
 
     const settings = await getSettingsSnapshot();
     const serviceDay = await getEffectiveServiceDay(date);
-    const meals: Array<{ mealType: MealType; value: "YES" | "NO" | null | undefined }> = [
+    const meals: Array<{ mealType: MealTypeType; value: "YES" | "NO" | null | undefined }> = [
       { mealType: MealType.BREAKFAST, value: breakfast },
       { mealType: MealType.LUNCH, value: lunch },
       { mealType: MealType.DINNER, value: dinner },
