@@ -41,7 +41,7 @@ deploy:
     - docker
     - serverless
   rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_COMMIT_BRANCH == "development" || $CI_COMMIT_BRANCH == "main"'
   before_script:
     - apk add --no-cache openssh-client
     - mkdir -p ~/.ssh
