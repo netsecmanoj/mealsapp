@@ -16,17 +16,16 @@ deploy:
     - chmod 700 ~/.ssh
     - |
       if [ -f "$SSH_PRIVATE_KEY" ]; then
-        ssh-add "$SSH_PRIVATE_KEY"
+        cp "$SSH_PRIVATE_KEY" ~/.ssh/id_rsa
       else
-        if echo "$SSH_PRIVATE_KEY" | grep -q "BEGIN .* PRIVATE KEY"; then
-          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
-        else
-          echo "$SSH_PRIVATE_KEY" | tr -d '\r' | base64 -d | ssh-add - || {
-            echo "SSH_PRIVATE_KEY is not a valid key or base64-encoded key.";
-            exit 1;
-          }
-        fi
+        printf '%s' "$SSH_PRIVATE_KEY" \
+          | tr -d '\r' \
+          | sed 's/\\\\n/\\n/g' \
+          > ~/.ssh/id_rsa
       fi
+      chmod 600 ~/.ssh/id_rsa
+      ssh-keygen -lf ~/.ssh/id_rsa
+      ssh-add ~/.ssh/id_rsa
     - ssh-keyscan -H -p "${SSH_PORT:-22}" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
     - chmod 644 ~/.ssh/known_hosts
   script:
