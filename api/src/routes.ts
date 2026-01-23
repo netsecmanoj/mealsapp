@@ -7,6 +7,31 @@ import { authMiddleware, requireRole, signToken } from "./auth.js";
 const prisma = new PrismaClient();
 const router = express.Router();
 
+function firstString(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const [first] = value;
+    return typeof first === "string" ? first : undefined;
+  }
+  return undefined;
+}
+
+function mustString(value: unknown, name: string): string {
+  const resolved = firstString(value);
+  if (!resolved) {
+    const error = new Error(`Missing ${name}`);
+    (error as Error & { statusCode?: number }).statusCode = 400;
+    throw error;
+  }
+  return resolved;
+}
+
+function mealTypeKey(mealType: MealType): "breakfast" | "lunch" | "dinner" {
+  if (mealType === MealType.BREAKFAST) return "breakfast";
+  if (mealType === MealType.LUNCH) return "lunch";
+  return "dinner";
+}
+
 function normalizeDateOnly(dateStr: string): Date {
   const [year, month, day] = dateStr.split("-").map((part) => Number(part));
   return new Date(Date.UTC(year, month - 1, day));
@@ -858,15 +883,15 @@ router.get(
   authMiddleware,
   requireRole([Role.SUPERVISOR, Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
-    const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const query = firstString(req.query.q)?.trim() ?? "";
     if (!query) {
       return res.json([]);
     }
     const visitors = await prisma.visitor.findMany({
       where: {
         OR: [
-          { name: { contains: query, mode: "insensitive" } },
-          { phone: { contains: query, mode: "insensitive" } },
+          { name: { contains: query } },
+          { phone: { contains: query } },
         ],
       },
       orderBy: { name: "asc" },
@@ -926,15 +951,20 @@ router.get(
   authMiddleware,
   requireRole([Role.SUPERVISOR, Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
-    const schema = z.object({
-      date: dateOnlySchema,
-    });
-    const parsed = schema.safeParse(req.query);
+    let dateParam: string;
+    let visitorId: string;
+    try {
+      dateParam = mustString(req.query.date, "date");
+      visitorId = mustString(req.params.visitorId, "visitorId");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(400).json({ error: message });
+    }
+    const parsed = dateOnlySchema.safeParse(dateParam);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid date" });
     }
-    const { visitorId } = req.params;
-    const { date } = parsed.data;
+    const date = parsed.data;
     const meals = await prisma.visitorMealChoice.findMany({
       where: { visitorId, date },
     });
@@ -964,7 +994,13 @@ router.post(
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
     }
-    const { visitorId } = req.params;
+    let visitorId: string;
+    try {
+      visitorId = mustString(req.params.visitorId, "visitorId");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(400).json({ error: message });
+    }
     const { date, breakfast, lunch, dinner, overrideReason } = parsed.data;
     const visitor = await prisma.visitor.findUnique({ where: { id: visitorId } });
     if (!visitor) {
@@ -1197,15 +1233,15 @@ router.get(
   authMiddleware,
   requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
-    const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const query = firstString(req.query.q)?.trim() ?? "";
     const users = await prisma.user.findMany({
       where: {
         ...(query
           ? {
               OR: [
-                { employeeId: { contains: query, mode: "insensitive" } },
-                { name: { contains: query, mode: "insensitive" } },
-                { dept: { contains: query, mode: "insensitive" } },
+                { employeeId: { contains: query } },
+                { name: { contains: query } },
+                { dept: { contains: query } },
               ],
             }
           : {}),
@@ -1289,7 +1325,14 @@ router.put(
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
     }
-    const existing = await prisma.user.findUnique({ where: { id: req.params.id } });
+    let userId: string;
+    try {
+      userId = mustString(req.params.id, "id");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(400).json({ error: message });
+    }
+    const existing = await prisma.user.findUnique({ where: { id: userId } });
     if (!existing) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -1338,7 +1381,14 @@ router.post(
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
     }
-    const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+    let userId: string;
+    try {
+      userId = mustString(req.params.id, "id");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(400).json({ error: message });
+    }
+    const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
@@ -1490,7 +1540,13 @@ router.get(
   authMiddleware,
   requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
-    const userId = typeof req.query.userId === "string" ? req.query.userId : null;
+    let userId: string;
+    try {
+      userId = mustString(req.query.userId, "userId").trim();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(400).json({ error: message });
+    }
     if (!userId) {
       return res.status(400).json({ error: "Missing userId" });
     }
@@ -1846,7 +1902,15 @@ router.post(
       if (shouldSkip) {
         skippedCount += 1;
       } else {
-        let resolvedTemplate = template ? { ...template } : getTemplateForDate(dateStr, settings);
+        const templateFromSettings = getTemplateForDate(dateStr, settings);
+        let resolvedTemplate = template
+          ? { ...template }
+          : {
+              officeOpen: templateFromSettings.isOfficeOpen,
+              breakfastServed: templateFromSettings.breakfastServed,
+              lunchServed: templateFromSettings.lunchServed,
+              dinnerServed: templateFromSettings.dinnerServed,
+            };
         if (template) {
           const dayOfWeek = cursor.getDay();
           if (keepSundaysClosed && dayOfWeek === 0) {
@@ -1927,7 +1991,7 @@ router.put(
   requireRole([Role.SUPER_ADMIN]),
   async (req, res) => {
     const schema = z.object({
-      settings: z.record(z.string()),
+      settings: z.record(z.string(), z.string()),
       reason: z.string().trim().min(1),
     });
     const parsed = schema.safeParse(req.body);
@@ -2035,7 +2099,14 @@ router.get(
   authMiddleware,
   requireRole([Role.SUPERVISOR, Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
-    const parsed = dateOnlySchema.safeParse(req.query.date);
+    let dateParam: string;
+    try {
+      dateParam = mustString(req.query.date, "date");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(400).json({ error: message });
+    }
+    const parsed = dateOnlySchema.safeParse(dateParam);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid date" });
     }
@@ -2278,9 +2349,10 @@ router.get(
       for (const meal of mealsToInclude) {
         const availability = officeOpen && served[meal];
         const key = `${user.id}:${meal}`;
+        const rowKey = mealTypeKey(meal);
         const request = requestMap.get(key);
         if (!availability) {
-          row[meal.toLowerCase()] = {
+          row[rowKey] = {
             selected: "NA",
             preference: "NA",
             final: "NA",
@@ -2296,7 +2368,7 @@ router.get(
         const final = selected;
         const source = explicit ? "EXPLICIT" : "NOT_SET";
         if (explicit) {
-          row[meal.toLowerCase()] = {
+          row[rowKey] = {
             selected,
             preference: preferenceValue,
             final,
@@ -2305,7 +2377,7 @@ router.get(
           };
           continue;
         }
-        row[meal.toLowerCase()] = {
+        row[rowKey] = {
           selected,
           preference: preferenceValue,
           final,
@@ -2319,26 +2391,43 @@ router.get(
     const visitorMap = new Map(visitorList.map((visitor) => [visitor.id, visitor]));
     const visitors = visitorMeals.length
       ? Array.from(
-          visitorMeals.reduce((map, meal) => {
-            const existing = map.get(meal.visitorId);
-            const visitor = visitorMap.get(meal.visitorId);
-            if (!existing && visitor) {
-              map.set(meal.visitorId, {
-                id: visitor.id,
-                name: visitor.name,
-                phone: visitor.phone,
-                company: visitor.company,
-                breakfast: null,
-                lunch: null,
-                dinner: null,
-              });
-            }
-            const row = map.get(meal.visitorId);
-            if (row) {
-              row[meal.mealType.toLowerCase()] = meal.wantMeal ? "YES" : "NO";
-            }
-            return map;
-          }, new Map())
+          visitorMeals
+            .reduce(
+              (map, meal) => {
+                const existing = map.get(meal.visitorId);
+                const visitor = visitorMap.get(meal.visitorId);
+                if (!existing && visitor) {
+                  map.set(meal.visitorId, {
+                    id: visitor.id,
+                    name: visitor.name,
+                    phone: visitor.phone,
+                    company: visitor.company,
+                    breakfast: null,
+                    lunch: null,
+                    dinner: null,
+                  });
+                }
+                const row = map.get(meal.visitorId);
+                if (row) {
+                  const key = mealTypeKey(meal.mealType);
+                  row[key] = meal.wantMeal ? "YES" : "NO";
+                }
+                return map;
+              },
+              new Map<
+                string,
+                {
+                  id: string;
+                  name: string;
+                  phone: string | null;
+                  company: string | null;
+                  breakfast: string | null;
+                  lunch: string | null;
+                  dinner: string | null;
+                }
+              >()
+            )
+            .values()
         ).map((item) => ({
           ...item,
           breakfast: item.breakfast ?? "NOT_SET",
