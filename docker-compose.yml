@@ -4,6 +4,8 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
     env_file:
       - /home/ubuntu/meals-app/config/api.env
     volumes:
