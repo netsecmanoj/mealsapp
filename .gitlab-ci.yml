@@ -9,29 +9,84 @@ deploy:
     - serverless
   rules:
     - if: '$CI_COMMIT_BRANCH == "development"'
+
   before_script:
     - apk add --no-cache openssh-client rsync
     - eval "$(ssh-agent -s)"
     - mkdir -p ~/.ssh
     - chmod 700 ~/.ssh
+
+    # Robust SSH key loader:
+    # - If SSH_PRIVATE_KEY is a FILE variable => it's a path => copy it
+    # - Else treat it as key content:
+    #    - multi-line with BEGIN/END
+    #    - or a single-line string with \n escapes
+    #    - or base64-encoded key
     - |
-      if [ -f "$SSH_PRIVATE_KEY" ]; then
-        cp "$SSH_PRIVATE_KEY" ~/.ssh/id_rsa
+      set -eu
+      DEST_KEY="$HOME/.ssh/deploy_key"
+
+      if [ -n "${SSH_PRIVATE_KEY:-}" ] && [ -f "${SSH_PRIVATE_KEY:-}" ]; then
+        # GitLab "File" variable case
+        cp "$SSH_PRIVATE_KEY" "$DEST_KEY"
       else
-        printf '%s' "$SSH_PRIVATE_KEY" \
-          | tr -d '\r' \
-          | sed 's/\\\\n/\\n/g' \
-          > ~/.ssh/id_rsa
+        # Normal variable case (content)
+        if printf '%s' "${SSH_PRIVATE_KEY:-}" | grep -q "BEGIN .* PRIVATE KEY"; then
+          # Proper multi-line PEM/OpenSSH content
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "$DEST_KEY"
+        else
+          # Might be one-line string with \n, or base64
+          if printf '%s' "${SSH_PRIVATE_KEY:-}" | grep -q '\\n'; then
+            printf '%s' "$SSH_PRIVATE_KEY" | tr -d '\r' | sed 's/\\n/\n/g' > "$DEST_KEY"
+          else
+            printf '%s' "$SSH_PRIVATE_KEY" | tr -d '\r' | base64 -d > "$DEST_KEY" 2>/dev/null || {
+              echo "ERROR: SSH_PRIVATE_KEY is not a valid key. Best practice: set SSH_PRIVATE_KEY as GitLab CI variable Type=File and upload the private key."
+              exit 1
+            }
+          fi
+        fi
       fi
-      chmod 600 ~/.ssh/id_rsa
-      ssh-keygen -lf ~/.ssh/id_rsa
-      ssh-add ~/.ssh/id_rsa
+
+      chmod 600 "$DEST_KEY"
+
+      # Validate key is readable (fails if truncated or passphrase-protected)
+      ssh-keygen -lf "$DEST_KEY" >/dev/null 2>&1 || {
+        echo "ERROR: Invalid SSH private key (truncated or passphrase-protected). Generate a key with NO passphrase and store it as a GitLab File variable."
+        exit 1
+      }
+
+      ssh-add "$DEST_KEY"
+      ssh-add -l
+
     - ssh-keyscan -H -p "${SSH_PORT:-22}" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
     - chmod 644 ~/.ssh/known_hosts
+
   script:
     - export DEPLOY_PATH="${DEPLOY_PATH:-/home/ubuntu/meals-app}"
-    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p $DEPLOY_PATH/current $DEPLOY_PATH/db $DEPLOY_PATH/config"
-    - rsync -az --delete --exclude '.git' --exclude 'api/node_modules' --exclude 'web/node_modules' --exclude '.env' --exclude 'api/.env' --exclude 'web/.env' ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/current/"
-    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH/current && docker compose build"
-    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH/current && docker compose run --rm api npx prisma migrate deploy"
-    - ssh -p "${SSH_PORT:-22}" "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH/current && docker compose up -d --remove-orphans"
+    - export SSH_OPTS="-p ${SSH_PORT:-22} -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes"
+    - export RSYNC_SSH="ssh -p ${SSH_PORT:-22} -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes"
+
+    # Quick connectivity check + required dirs
+    - |
+      ssh $SSH_OPTS "$DEPLOY_USER@$DEPLOY_HOST" "
+        echo CI_SSH_OK &&
+        mkdir -p $DEPLOY_PATH/current $DEPLOY_PATH/db $DEPLOY_PATH/config
+      "
+
+    # Sync repo to server (do NOT sync env/db secrets)
+    - |
+      rsync -az --delete \
+        --exclude '.git' \
+        --exclude 'api/node_modules' \
+        --exclude 'web/node_modules' \
+        --exclude '.env' \
+        --exclude 'api/.env' \
+        --exclude 'web/.env' \
+        --exclude 'db' \
+        -e "$RSYNC_SSH" \
+        ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/current/"
+
+    # Build & run on server
+    - ssh $SSH_OPTS "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH/current && docker compose build"
+    - ssh $SSH_OPTS "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH/current && docker compose run --rm api npx prisma migrate deploy"
+    - ssh $SSH_OPTS "$DEPLOY_USER@$DEPLOY_HOST" "cd $DEPLOY_PATH/current && docker compose up -d --remove-orphans"
