@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import prismaPkg from "@prisma/client";
 import { authMiddleware, requireRole, signToken } from "./auth.js";
-import { getZonedDateString, zonedTimeToUtc } from "./timezone.js";
+import { addDaysToDateString, getZonedDateString, zonedTimeToUtc } from "./timezone.js";
 
 const { PrismaClient, MealRequestStatus, MealType, Role, Source } = prismaPkg as unknown as {
   PrismaClient: typeof import("@prisma/client").PrismaClient;
@@ -83,6 +83,11 @@ function getDefaultSettings() {
       LUNCH: "11:00",
       DINNER: "17:00",
     },
+    cutoffDayOffsets: {
+      BREAKFAST: 0,
+      LUNCH: 0,
+      DINNER: 0,
+    },
     weeklyTemplate: { sundayClosed: true },
     jwtExpiryMinutes: "10080",
     pinPolicyMinLength: "4",
@@ -102,6 +107,9 @@ async function getSettingsSnapshot() {
           "cutoff.breakfast",
           "cutoff.lunch",
           "cutoff.dinner",
+          "cutoffDayOffset.breakfast",
+          "cutoffDayOffset.lunch",
+          "cutoffDayOffset.dinner",
           "weeklyTemplate",
           "jwtExpiryMinutes",
           "pinPolicyMinLength",
@@ -119,12 +127,22 @@ async function getSettingsSnapshot() {
       weeklyTemplate = defaults.weeklyTemplate;
     }
   }
+  const resolveOffset = (value: string | undefined, fallback: number) => {
+    const parsed = Number(value);
+    if (parsed === -1 || parsed === 0) return parsed;
+    return fallback;
+  };
   const data = {
     timezone: map.get("timezone") || defaults.timezone,
     cutoffs: {
       BREAKFAST: map.get("cutoff.breakfast") || defaults.cutoffs.BREAKFAST,
       LUNCH: map.get("cutoff.lunch") || defaults.cutoffs.LUNCH,
       DINNER: map.get("cutoff.dinner") || defaults.cutoffs.DINNER,
+    },
+    cutoffDayOffsets: {
+      BREAKFAST: resolveOffset(map.get("cutoffDayOffset.breakfast"), defaults.cutoffDayOffsets.BREAKFAST),
+      LUNCH: resolveOffset(map.get("cutoffDayOffset.lunch"), defaults.cutoffDayOffsets.LUNCH),
+      DINNER: resolveOffset(map.get("cutoffDayOffset.dinner"), defaults.cutoffDayOffsets.DINNER),
     },
     weeklyTemplate,
     jwtExpiryMinutes: map.get("jwtExpiryMinutes") || defaults.jwtExpiryMinutes,
@@ -141,6 +159,12 @@ function parseTimeString(value: string | null | undefined) {
   const minute = Number(minuteStr);
   if (Number.isNaN(hour) || Number.isNaN(minute)) return null;
   return { hour, minute };
+}
+
+function getCutoffDayOffset(mealType: MealTypeType, settings?: any): number {
+  const fallback = getDefaultSettings().cutoffDayOffsets[mealType] ?? 0;
+  const raw = settings?.cutoffDayOffsets?.[mealType];
+  return raw === -1 || raw === 0 ? raw : fallback;
 }
 
 function getTemplateForDate(dateStr: string, settings: any) {
@@ -233,7 +257,9 @@ function getCutoffDate(dateStr: string, mealType: MealTypeType, serviceDay?: any
   const cutoff = cutoffOverride ?? baseCutoff;
   const cutoffLabel = `${String(cutoff.hour).padStart(2, "0")}:${String(cutoff.minute).padStart(2, "0")}`;
   const timezone = settings?.timezone || getDefaultSettings().timezone;
-  return zonedTimeToUtc(dateStr, cutoffLabel, timezone);
+  const cutoffDayOffset = getCutoffDayOffset(mealType, settings);
+  const cutoffDateStr = addDaysToDateString(dateStr, cutoffDayOffset);
+  return zonedTimeToUtc(cutoffDateStr, cutoffLabel, timezone);
 }
 
 function isPastServiceDate(dateStr: string, settings?: any): boolean {
@@ -242,12 +268,16 @@ function isPastServiceDate(dateStr: string, settings?: any): boolean {
   return dateStr < today;
 }
 
-function sendCutoffPassed(res: express.Response, params: { mealType: MealTypeType; cutoffLabel: string; timezone: string }) {
+function sendCutoffPassed(
+  res: express.Response,
+  params: { mealType: MealTypeType; cutoffLabel: string; timezone: string; cutoffDayOffset: number }
+) {
   return res.status(409).json({
     error: "CUTOFF_PASSED",
     meal: params.mealType,
     cutoff: params.cutoffLabel,
     timezone: params.timezone,
+    cutoffDayOffset: params.cutoffDayOffset,
   });
 }
 
@@ -267,7 +297,7 @@ function sendMealNotServed(res: express.Response, params: { date: string; mealTy
   });
 }
 
-function getCutoffLabel(mealType: MealTypeType, serviceDay?: any, settings?: any): string {
+function getCutoffTimeLabel(mealType: MealTypeType, serviceDay?: any, settings?: any): string {
   const override =
     mealType === MealType.BREAKFAST
       ? serviceDay?.breakfastCutoff
@@ -276,6 +306,13 @@ function getCutoffLabel(mealType: MealTypeType, serviceDay?: any, settings?: any
         : serviceDay?.dinnerCutoff;
   const baseLabel = settings?.cutoffs?.[mealType] || cutoffTimes[mealType].label;
   return override || baseLabel;
+}
+
+function getCutoffLabel(mealType: MealTypeType, serviceDay?: any, settings?: any): string {
+  const label = getCutoffTimeLabel(mealType, serviceDay, settings);
+  const cutoffDayOffset = getCutoffDayOffset(mealType, settings);
+  if (cutoffDayOffset === -1) return `${label} (previous day)`;
+  return label;
 }
 
 function getDateRange(from: string, to: string): string[] {
@@ -586,6 +623,7 @@ router.post("/me/choice", authMiddleware, async (req, res) => {
   const dateValue = normalizeDateOnly(date);
   const settings = await getSettingsSnapshot();
   const timezone = settings?.timezone || getDefaultSettings().timezone;
+  const cutoffDayOffset = getCutoffDayOffset(mealType, settings);
   if (isPastServiceDate(date, settings)) {
     return sendPastDate(res, { date, timezone });
   }
@@ -597,8 +635,9 @@ router.post("/me/choice", authMiddleware, async (req, res) => {
   if (new Date() > cutoffDate) {
     return sendCutoffPassed(res, {
       mealType,
-      cutoffLabel: getCutoffLabel(mealType, serviceDay, settings),
+      cutoffLabel: getCutoffTimeLabel(mealType, serviceDay, settings),
       timezone,
+      cutoffDayOffset,
     });
   }
 
@@ -648,6 +687,7 @@ router.post("/meal-requests", authMiddleware, async (req, res) => {
   const { date, mealType, note } = parsed.data;
   const settings = await getSettingsSnapshot();
   const timezone = settings?.timezone || getDefaultSettings().timezone;
+  const cutoffDayOffset = getCutoffDayOffset(mealType, settings);
   const serviceDay = await getEffectiveServiceDay(date);
   if (!serviceDay.isOfficeOpen) {
     return res.status(409).json({ error: "Office closed" });
@@ -662,8 +702,9 @@ router.post("/meal-requests", authMiddleware, async (req, res) => {
   if (isAfterCutoff && !isHrOverride) {
     return sendCutoffPassed(res, {
       mealType,
-      cutoffLabel: getCutoffLabel(mealType, serviceDay, settings),
+      cutoffLabel: getCutoffTimeLabel(mealType, serviceDay, settings),
       timezone,
+      cutoffDayOffset,
     });
   }
   if (isAfterCutoff && isHrOverride && !note) {
@@ -810,6 +851,7 @@ router.delete("/choice", authMiddleware, async (req, res) => {
   const dateValue = normalizeDateOnly(date);
   const settings = await getSettingsSnapshot();
   const timezone = settings?.timezone || getDefaultSettings().timezone;
+  const cutoffDayOffset = getCutoffDayOffset(mealType, settings);
   if (isPastServiceDate(date, settings)) {
     return sendPastDate(res, { date, timezone });
   }
@@ -823,8 +865,9 @@ router.delete("/choice", authMiddleware, async (req, res) => {
   if (isAfterCutoff && !isHrOverride) {
     return sendCutoffPassed(res, {
       mealType,
-      cutoffLabel: getCutoffLabel(mealType, serviceDay, settings),
+      cutoffLabel: getCutoffTimeLabel(mealType, serviceDay, settings),
       timezone,
+      cutoffDayOffset,
     });
   }
   if (isAfterCutoff && isHrOverride && !reason) {
@@ -883,6 +926,7 @@ router.post(
     const dateValue = normalizeDateOnly(date);
     const settings = await getSettingsSnapshot();
     const timezone = settings?.timezone || getDefaultSettings().timezone;
+    const cutoffDayOffset = getCutoffDayOffset(mealType, settings);
     if (isPastServiceDate(date, settings)) {
       return sendPastDate(res, { date, timezone });
     }
@@ -897,8 +941,9 @@ router.post(
     if (isAfterCutoff && !isHrOverride) {
       return sendCutoffPassed(res, {
         mealType,
-        cutoffLabel: getCutoffLabel(mealType, serviceDay, settings),
+        cutoffLabel: getCutoffTimeLabel(mealType, serviceDay, settings),
         timezone,
+        cutoffDayOffset,
       });
     }
     if (isAfterCutoff && isHrOverride && !reason) {
@@ -2091,6 +2136,9 @@ router.put(
       "cutoff.breakfast",
       "cutoff.lunch",
       "cutoff.dinner",
+      "cutoffDayOffset.breakfast",
+      "cutoffDayOffset.lunch",
+      "cutoffDayOffset.dinner",
       "weeklyTemplate",
     ]);
     const entries = Object.entries(parsed.data.settings).filter(([key]) => allowedKeys.has(key));

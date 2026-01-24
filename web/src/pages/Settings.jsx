@@ -7,6 +7,9 @@ export default function Settings() {
   const [breakfastCutoff, setBreakfastCutoff] = useState("");
   const [lunchCutoff, setLunchCutoff] = useState("");
   const [dinnerCutoff, setDinnerCutoff] = useState("");
+  const [breakfastOffset, setBreakfastOffset] = useState("0");
+  const [lunchOffset, setLunchOffset] = useState("0");
+  const [dinnerOffset, setDinnerOffset] = useState("0");
   const [weeklyTemplate, setWeeklyTemplate] = useState("{");
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState("");
@@ -22,6 +25,9 @@ export default function Settings() {
         setBreakfastCutoff(data.cutoffs?.BREAKFAST || "");
         setLunchCutoff(data.cutoffs?.LUNCH || "");
         setDinnerCutoff(data.cutoffs?.DINNER || "");
+        setBreakfastOffset(String(data.cutoffDayOffsets?.BREAKFAST ?? 0));
+        setLunchOffset(String(data.cutoffDayOffsets?.LUNCH ?? 0));
+        setDinnerOffset(String(data.cutoffDayOffsets?.DINNER ?? 0));
         setWeeklyTemplate(JSON.stringify(data.weeklyTemplate || { sundayClosed: true }, null, 2));
       })
       .catch((err) => {
@@ -47,6 +53,9 @@ export default function Settings() {
           "cutoff.breakfast": breakfastCutoff.trim(),
           "cutoff.lunch": lunchCutoff.trim(),
           "cutoff.dinner": dinnerCutoff.trim(),
+          "cutoffDayOffset.breakfast": breakfastOffset,
+          "cutoffDayOffset.lunch": lunchOffset,
+          "cutoffDayOffset.dinner": dinnerOffset,
           weeklyTemplate: weeklyTemplate.trim(),
         },
         reason: reason.trim(),
@@ -72,12 +81,48 @@ export default function Settings() {
           <input value={breakfastCutoff} onChange={(event) => setBreakfastCutoff(event.target.value)} />
         </div>
         <div className="field">
+          <label>Breakfast cutoff applies to</label>
+          <select value={breakfastOffset} onChange={(event) => setBreakfastOffset(event.target.value)}>
+            <option value="0">Same day (D0)</option>
+            <option value="-1">Previous day (D-1)</option>
+          </select>
+          <div className="muted">
+            {breakfastOffset === "-1"
+              ? `Cutoff is at ${breakfastCutoff || "HH:MM"} on the day before the service date`
+              : `Cutoff is at ${breakfastCutoff || "HH:MM"} on the service date`}
+          </div>
+        </div>
+        <div className="field">
           <label>Lunch cutoff (HH:MM)</label>
           <input value={lunchCutoff} onChange={(event) => setLunchCutoff(event.target.value)} />
         </div>
         <div className="field">
+          <label>Lunch cutoff applies to</label>
+          <select value={lunchOffset} onChange={(event) => setLunchOffset(event.target.value)}>
+            <option value="0">Same day (D0)</option>
+            <option value="-1">Previous day (D-1)</option>
+          </select>
+          <div className="muted">
+            {lunchOffset === "-1"
+              ? `Cutoff is at ${lunchCutoff || "HH:MM"} on the day before the service date`
+              : `Cutoff is at ${lunchCutoff || "HH:MM"} on the service date`}
+          </div>
+        </div>
+        <div className="field">
           <label>Dinner cutoff (HH:MM)</label>
           <input value={dinnerCutoff} onChange={(event) => setDinnerCutoff(event.target.value)} />
+        </div>
+        <div className="field">
+          <label>Dinner cutoff applies to</label>
+          <select value={dinnerOffset} onChange={(event) => setDinnerOffset(event.target.value)}>
+            <option value="0">Same day (D0)</option>
+            <option value="-1">Previous day (D-1)</option>
+          </select>
+          <div className="muted">
+            {dinnerOffset === "-1"
+              ? `Cutoff is at ${dinnerCutoff || "HH:MM"} on the day before the service date`
+              : `Cutoff is at ${dinnerCutoff || "HH:MM"} on the service date`}
+          </div>
         </div>
         <div className="field">
           <label>Weekly template (JSON)</label>

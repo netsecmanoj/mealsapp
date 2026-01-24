@@ -71,6 +71,16 @@ export function getZonedDateString(timeZone: string, now: Date = new Date()): st
   return `${parts.year}-${month}-${day}`;
 }
 
+export function addDaysToDateString(dateStr: string, days: number): string {
+  const [year, month, day] = dateStr.split("-").map((part) => Number(part));
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  const nextYear = date.getUTCFullYear();
+  const nextMonth = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const nextDay = String(date.getUTCDate()).padStart(2, "0");
+  return `${nextYear}-${nextMonth}-${nextDay}`;
+}
+
 export function formatZonedTime(
   date: Date,
   timeZone: string,

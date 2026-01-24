@@ -77,7 +77,7 @@ export default function Schedule() {
       const errorCode = err?.message || "";
       if (errorCode === "CUTOFF_PASSED") {
         setLocked((prev) => ({ ...prev, [keyFor(date, mealType)]: true }));
-        setError("Cutoff passed. Please raise a request.");
+        setError("Cutoff passed. Contact admin/supervisor.");
       } else if (errorCode === "MEAL_NOT_SERVED") {
         setChoices((prev) => ({
           ...prev,
@@ -119,7 +119,7 @@ export default function Schedule() {
       setMessage("Reset");
     } catch (err) {
       if (err?.message === "CUTOFF_PASSED") {
-        setError("Cutoff passed. Please raise a request.");
+        setError("Cutoff passed. Contact admin/supervisor.");
       } else if (err?.message === "PAST_DATE") {
         setError("That service day has already passed.");
       } else {
@@ -235,7 +235,7 @@ export default function Schedule() {
                     <div className="row-lock">{cutoffLabel}</div>
                   ) : null}
                   {servedGlobal && item?.cutoffPassed ? (
-                    <div className="row-lock row-lock--passed">Cutoff passed</div>
+                    <div className="row-lock row-lock--passed">Cutoff passed. Contact admin/supervisor.</div>
                   ) : null}
                 </div>
                 {servedGlobal ? (
