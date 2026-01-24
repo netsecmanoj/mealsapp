@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { clearSession, getSession, SESSION_EVENT } from "./lib/api.js";
+import { clearSession, getSession, getSystemTime, SESSION_EVENT } from "./lib/api.js";
 import Login from "./pages/Login.jsx";
 import Schedule from "./pages/Schedule.jsx";
 import Calendar from "./pages/Calendar.jsx";
@@ -29,6 +29,8 @@ function ProtectedRoute({ children, roles }) {
 
 export default function App() {
   const [session, setSessionState] = useState(() => getSession());
+  const [clockNow, setClockNow] = useState(null);
+  const [clockZone, setClockZone] = useState("");
   useEffect(() => {
     const sync = () => setSessionState(getSession());
     window.addEventListener(SESSION_EVENT, sync);
@@ -38,6 +40,37 @@ export default function App() {
       window.removeEventListener("storage", sync);
     };
   }, []);
+  useEffect(() => {
+    if (!session?.token) {
+      setClockNow(null);
+      setClockZone("");
+      return undefined;
+    }
+    let active = true;
+    let timer;
+    let skewMs = 0;
+    const load = async () => {
+      try {
+        const data = await getSystemTime();
+        if (!active) return;
+        const serverNow = new Date(data.serverNow);
+        skewMs = serverNow.getTime() - Date.now();
+        setClockZone(data.timezone || "");
+        const tick = () => setClockNow(new Date(Date.now() + skewMs));
+        tick();
+        timer = window.setInterval(tick, 1000);
+      } catch {
+        if (!active) return;
+        setClockNow(null);
+        setClockZone("");
+      }
+    };
+    load();
+    return () => {
+      active = false;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [session?.token]);
   const role = session?.user?.role || "";
   const canReport = role === "SUPERVISOR" || role === "ADMIN" || role === "HR_ADMIN" || role === "SUPER_ADMIN";
   const canSupervisor = role === "SUPERVISOR" || role === "HR_ADMIN" || role === "SUPER_ADMIN";
@@ -61,6 +94,16 @@ export default function App() {
     window.location.href = "/login";
   };
 
+  const clockLabel =
+    clockNow && clockZone
+      ? `${new Intl.DateTimeFormat("en-US", {
+          timeZone: clockZone,
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).format(clockNow)} (${clockZone})`
+      : "";
+
   return (
     <>
       {session?.token ? (
@@ -72,6 +115,7 @@ export default function App() {
                 {link.label}
               </NavLink>
             ))}
+          {clockLabel ? <span className="nav-clock">{clockLabel}</span> : null}
           <span className="nav-role">Role: {role || "unknown"}</span>
           <button className="nav-logout" onClick={handleLogout}>
             Logout

@@ -10,7 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "prisma:migrate": "prisma migrate dev",
-    "seed": "node dist/seed.js"
+    "seed": "node dist/seed.js",
+    "test": "tsx src/__tests__/cutoff.test.ts"
   },
   "keywords": [],
   "author": "",

@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import prismaPkg from "@prisma/client";
 import { authMiddleware, requireRole, signToken } from "./auth.js";
+import { getZonedDateString, zonedTimeToUtc } from "./timezone.js";
 
 const { PrismaClient, MealRequestStatus, MealType, Role, Source } = prismaPkg as unknown as {
   PrismaClient: typeof import("@prisma/client").PrismaClient;
@@ -219,8 +220,8 @@ function isMealServed(serviceDay: {
   return serviceDay.dinnerServed;
 }
 
+// Cutoff enforcement helpers (timezone-aware). Remove together if reverting this feature.
 function getCutoffDate(dateStr: string, mealType: MealTypeType, serviceDay?: any, settings?: any): Date {
-  const [year, month, day] = dateStr.split("-").map((part) => Number(part));
   const cutoffOverride =
     mealType === MealType.BREAKFAST
       ? parseTimeString(serviceDay?.breakfastCutoff)
@@ -230,7 +231,40 @@ function getCutoffDate(dateStr: string, mealType: MealTypeType, serviceDay?: any
   const baseCutoffLabel = settings?.cutoffs?.[mealType] || cutoffTimes[mealType].label;
   const baseCutoff = parseTimeString(baseCutoffLabel) ?? cutoffTimes[mealType];
   const cutoff = cutoffOverride ?? baseCutoff;
-  return new Date(year, month - 1, day, cutoff.hour, cutoff.minute, 0, 0);
+  const cutoffLabel = `${String(cutoff.hour).padStart(2, "0")}:${String(cutoff.minute).padStart(2, "0")}`;
+  const timezone = settings?.timezone || getDefaultSettings().timezone;
+  return zonedTimeToUtc(dateStr, cutoffLabel, timezone);
+}
+
+function isPastServiceDate(dateStr: string, settings?: any): boolean {
+  const timezone = settings?.timezone || getDefaultSettings().timezone;
+  const today = getZonedDateString(timezone);
+  return dateStr < today;
+}
+
+function sendCutoffPassed(res: express.Response, params: { mealType: MealTypeType; cutoffLabel: string; timezone: string }) {
+  return res.status(409).json({
+    error: "CUTOFF_PASSED",
+    meal: params.mealType,
+    cutoff: params.cutoffLabel,
+    timezone: params.timezone,
+  });
+}
+
+function sendPastDate(res: express.Response, params: { date: string; timezone: string }) {
+  return res.status(409).json({
+    error: "PAST_DATE",
+    date: params.date,
+    timezone: params.timezone,
+  });
+}
+
+function sendMealNotServed(res: express.Response, params: { date: string; mealType: MealTypeType }) {
+  return res.status(409).json({
+    error: "MEAL_NOT_SERVED",
+    date: params.date,
+    meal: params.mealType,
+  });
 }
 
 function getCutoffLabel(mealType: MealTypeType, serviceDay?: any, settings?: any): string {
@@ -306,6 +340,7 @@ async function logAudit(params: {
 
 async function getEffectiveChoicesForUser(userId: string, from: string, to: string) {
   const settings = await getSettingsSnapshot();
+  const now = new Date();
   const dates = getDateRange(from, to);
   const [choices, preferences, serviceRecords, requests] = await Promise.all([
     prisma.mealChoice.findMany({
@@ -364,14 +399,13 @@ async function getEffectiveChoicesForUser(userId: string, from: string, to: stri
       const explicit = choiceMap.get(key);
       const request = requestMap.get(key);
       const cutoffLabel = getCutoffLabel(mealType, serviceDay, settings);
-      const cutoffPassed = servedGlobal
-        ? new Date() > getCutoffDate(dateStr, mealType, serviceDay, settings)
-        : false;
+      const cutoffDate = getCutoffDate(dateStr, mealType, serviceDay, settings);
+      const cutoffPassed = servedGlobal ? now > cutoffDate : false;
       const updatedByRole = explicit?.updatedById ? updatedByMap.get(explicit.updatedById) : null;
       const overridden =
         !!explicit &&
         (updatedByRole === Role.HR_ADMIN || updatedByRole === Role.SUPER_ADMIN) &&
-        explicit.updatedAt > getCutoffDate(dateStr, mealType, serviceDay, settings);
+        explicit.updatedAt > cutoffDate;
       if (!servedGlobal || !officeOpen) {
         result.push({
           date: dateStr,
@@ -481,6 +515,14 @@ router.post("/auth/login", async (req, res) => {
   });
 });
 
+router.get("/system/time", authMiddleware, async (_req, res) => {
+  const settings = await getSettingsSnapshot();
+  return res.json({
+    serverNow: new Date().toISOString(),
+    timezone: settings?.timezone || getDefaultSettings().timezone,
+  });
+});
+
 router.get("/service-days", authMiddleware, async (req, res) => {
   const schema = z.object({
     from: dateOnlySchema,
@@ -543,13 +585,21 @@ router.post("/me/choice", authMiddleware, async (req, res) => {
   const { date, mealType, wantMeal } = parsed.data;
   const dateValue = normalizeDateOnly(date);
   const settings = await getSettingsSnapshot();
+  const timezone = settings?.timezone || getDefaultSettings().timezone;
+  if (isPastServiceDate(date, settings)) {
+    return sendPastDate(res, { date, timezone });
+  }
   const serviceDay = await getEffectiveServiceDay(date);
   if (!isMealServed(serviceDay, mealType)) {
-    return res.status(409).json({ error: "Meal not served" });
+    return sendMealNotServed(res, { date, mealType });
   }
   const cutoffDate = getCutoffDate(date, mealType, serviceDay, settings);
   if (new Date() > cutoffDate) {
-    return res.status(403).json({ error: "Cutoff passed" });
+    return sendCutoffPassed(res, {
+      mealType,
+      cutoffLabel: getCutoffLabel(mealType, serviceDay, settings),
+      timezone,
+    });
   }
 
   const choice = await prisma.mealChoice.upsert({
@@ -597,6 +647,7 @@ router.post("/meal-requests", authMiddleware, async (req, res) => {
 
   const { date, mealType, note } = parsed.data;
   const settings = await getSettingsSnapshot();
+  const timezone = settings?.timezone || getDefaultSettings().timezone;
   const serviceDay = await getEffectiveServiceDay(date);
   if (!serviceDay.isOfficeOpen) {
     return res.status(409).json({ error: "Office closed" });
@@ -609,7 +660,11 @@ router.post("/meal-requests", authMiddleware, async (req, res) => {
   const isAfterCutoff = new Date() > cutoffDate;
   const isHrOverride = req.user.role === Role.HR_ADMIN || req.user.role === Role.SUPER_ADMIN;
   if (isAfterCutoff && !isHrOverride) {
-    return res.status(403).json({ error: "Cutoff passed" });
+    return sendCutoffPassed(res, {
+      mealType,
+      cutoffLabel: getCutoffLabel(mealType, serviceDay, settings),
+      timezone,
+    });
   }
   if (isAfterCutoff && isHrOverride && !note) {
     return res.status(400).json({ error: "Override reason required" });
@@ -754,15 +809,23 @@ router.delete("/choice", authMiddleware, async (req, res) => {
   const { date, mealType, reason } = parsed.data;
   const dateValue = normalizeDateOnly(date);
   const settings = await getSettingsSnapshot();
+  const timezone = settings?.timezone || getDefaultSettings().timezone;
+  if (isPastServiceDate(date, settings)) {
+    return sendPastDate(res, { date, timezone });
+  }
   const serviceDay = await getEffectiveServiceDay(date);
   if (!isMealServed(serviceDay, mealType)) {
-    return res.status(409).json({ error: "Meal not served" });
+    return sendMealNotServed(res, { date, mealType });
   }
   const cutoffDate = getCutoffDate(date, mealType, serviceDay, settings);
   const isAfterCutoff = new Date() > cutoffDate;
   const isHrOverride = req.user.role === Role.HR_ADMIN || req.user.role === Role.SUPER_ADMIN;
   if (isAfterCutoff && !isHrOverride) {
-    return res.status(403).json({ error: "Cutoff passed" });
+    return sendCutoffPassed(res, {
+      mealType,
+      cutoffLabel: getCutoffLabel(mealType, serviceDay, settings),
+      timezone,
+    });
   }
   if (isAfterCutoff && isHrOverride && !reason) {
     return res.status(400).json({ error: "Override reason required" });
@@ -819,16 +882,24 @@ router.post(
     const { employeeId, date, mealType, wantMeal, reason } = parsed.data;
     const dateValue = normalizeDateOnly(date);
     const settings = await getSettingsSnapshot();
+    const timezone = settings?.timezone || getDefaultSettings().timezone;
+    if (isPastServiceDate(date, settings)) {
+      return sendPastDate(res, { date, timezone });
+    }
     const serviceDay = await getEffectiveServiceDay(date);
     if (!isMealServed(serviceDay, mealType)) {
-      return res.status(409).json({ error: "Meal not served" });
+      return sendMealNotServed(res, { date, mealType });
     }
     const cutoffDate = getCutoffDate(date, mealType, serviceDay, settings);
     const now = new Date();
     const isAfterCutoff = now > cutoffDate;
     const isHrOverride = req.user.role === Role.HR_ADMIN || req.user.role === Role.SUPER_ADMIN;
     if (isAfterCutoff && !isHrOverride) {
-      return res.status(403).json({ error: "Cutoff passed" });
+      return sendCutoffPassed(res, {
+        mealType,
+        cutoffLabel: getCutoffLabel(mealType, serviceDay, settings),
+        timezone,
+      });
     }
     if (isAfterCutoff && isHrOverride && !reason) {
       return res.status(400).json({ error: "Override reason required" });
@@ -1020,6 +1091,10 @@ router.post(
     }
 
     const settings = await getSettingsSnapshot();
+    const timezone = settings?.timezone || getDefaultSettings().timezone;
+    if (isPastServiceDate(date, settings)) {
+      return sendPastDate(res, { date, timezone });
+    }
     const serviceDay = await getEffectiveServiceDay(date);
     const meals: Array<{ mealType: MealTypeType; value: "YES" | "NO" | null | undefined }> = [
       { mealType: MealType.BREAKFAST, value: breakfast },
@@ -1030,7 +1105,7 @@ router.post(
     for (const meal of meals) {
       if (meal.value === undefined) continue;
       if (!isMealServed(serviceDay, meal.mealType)) {
-        return res.status(409).json({ error: "Meal not served" });
+        return sendMealNotServed(res, { date, mealType: meal.mealType });
       }
       const cutoffDate = getCutoffDate(date, meal.mealType, serviceDay, settings);
       if (new Date() > cutoffDate && !overrideReason) {

@@ -50,6 +50,12 @@ a {
 }
 
 .nav-role {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.nav-clock {
   margin-left: auto;
   font-size: 12px;
   font-weight: 700;
@@ -167,6 +173,11 @@ a {
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
+}
+
+.row-lock--passed {
+  color: var(--danger);
+  font-weight: 700;
 }
 
 .row-badge {

@@ -75,13 +75,19 @@ async function apiFetch(path, options = {}) {
 
   if (!response.ok) {
     let message = "Request failed";
+    let details = null;
     try {
       const data = await response.json();
       if (data?.error) message = data.error;
+      details = data ?? null;
     } catch {
       // ignore
     }
-    throw new Error(message);
+    const error = new Error(message);
+    if (details) {
+      error.details = details;
+    }
+    throw error;
   }
 
   if (response.status === 204) return null;
@@ -132,6 +138,10 @@ export async function applyAvailabilityTemplate(payload) {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function getSystemTime() {
+  return apiFetch("/api/system/time", { method: "GET" });
 }
 
 export async function setMyChoice(date, mealType, wantMeal) {

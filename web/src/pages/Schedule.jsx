@@ -74,10 +74,11 @@ export default function Schedule() {
       }));
       setMessage("Saved");
     } catch (err) {
-      if (err?.message === "Cutoff passed") {
+      const errorCode = err?.message || "";
+      if (errorCode === "CUTOFF_PASSED") {
         setLocked((prev) => ({ ...prev, [keyFor(date, mealType)]: true }));
-        setError("Cutoff passed");
-      } else if (err?.message === "Meal not served") {
+        setError("Cutoff passed. Please raise a request.");
+      } else if (errorCode === "MEAL_NOT_SERVED") {
         setChoices((prev) => ({
           ...prev,
           [keyFor(date, mealType)]: {
@@ -92,6 +93,8 @@ export default function Schedule() {
           },
         }));
         setError("Meal not served");
+      } else if (errorCode === "PAST_DATE") {
+        setError("That service day has already passed.");
       } else {
         setError(err.message || "Failed");
       }
@@ -115,7 +118,13 @@ export default function Schedule() {
       }
       setMessage("Reset");
     } catch (err) {
-      setError(err.message || "Failed");
+      if (err?.message === "CUTOFF_PASSED") {
+        setError("Cutoff passed. Please raise a request.");
+      } else if (err?.message === "PAST_DATE") {
+        setError("That service day has already passed.");
+      } else {
+        setError(err.message || "Failed");
+      }
     }
   };
 
@@ -224,6 +233,9 @@ export default function Schedule() {
                   {overrideLabel ? <div className="row-badge">{overrideLabel}</div> : null}
                   {cutoffLabel && servedGlobal ? (
                     <div className="row-lock">{cutoffLabel}</div>
+                  ) : null}
+                  {servedGlobal && item?.cutoffPassed ? (
+                    <div className="row-lock row-lock--passed">Cutoff passed</div>
                   ) : null}
                 </div>
                 {servedGlobal ? (
