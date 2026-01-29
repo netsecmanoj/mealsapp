@@ -40,6 +40,7 @@ model User {
   employeeId     String       @unique
   name           String
   dept           String?
+  site           String?
   role           Role
   pinHash        String
   active         Boolean      @default(true)

@@ -12,6 +12,7 @@ export type AuthUser = {
   employeeId: string;
   name: string;
   dept: string | null;
+  site: string | null;
   role: RoleType;
 };
 
@@ -38,6 +39,7 @@ export function signToken(user: AuthUser): string {
       employeeId: user.employeeId,
       name: user.name,
       dept: user.dept,
+      site: user.site,
       role: user.role,
     },
     getJwtSecret(),
@@ -60,6 +62,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
       employeeId: String(payload.employeeId),
       name: String(payload.name),
       dept: payload.dept ? String(payload.dept) : null,
+      site: payload.site ? String(payload.site) : null,
       role: payload.role as RoleType,
     };
 

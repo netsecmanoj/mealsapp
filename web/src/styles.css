@@ -447,6 +447,13 @@ a {
   border: 1px solid var(--border);
 }
 
+.list-main select {
+  padding: 6px 8px;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
 .textarea {
   width: 100%;
   min-height: 120px;

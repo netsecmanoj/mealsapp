@@ -204,6 +204,17 @@ export async function adminGetAuditLogs(params = {}) {
   return apiFetch(`/api/admin/audit-logs${suffix ? `?${suffix}` : ""}`, { method: "GET" });
 }
 
+export async function adminGetMasterData() {
+  return apiFetch("/api/admin/master-data", { method: "GET" });
+}
+
+export async function adminUpdateMasterData(payload) {
+  return apiFetch("/api/admin/master-data", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function adminCreateUser(payload) {
   return apiFetch("/api/admin/users", {
     method: "POST",

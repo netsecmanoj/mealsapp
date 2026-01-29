@@ -74,6 +74,11 @@ const cutoffTimes = {
 
 const SETTINGS_CACHE_TTL_MS = 60_000;
 let settingsCache: { ts: number; data: any } | null = null;
+const MASTER_CACHE_TTL_MS = 60_000;
+let masterDataCache: { ts: number; data: { departments: string[]; sites: string[] } } | null = null;
+const MASTER_MAX_ITEMS = 200;
+const MASTER_MAX_LENGTH = 60;
+const UNASSIGNED_LABEL = "Unassigned";
 
 function getDefaultSettings() {
   return {
@@ -150,6 +155,150 @@ async function getSettingsSnapshot() {
   };
   settingsCache = { ts: Date.now(), data };
   return data;
+}
+
+function sortMasterValues(values: string[]): string[] {
+  const lowerUnassigned = UNASSIGNED_LABEL.toLowerCase();
+  return [...values].sort((a, b) => {
+    const aLower = a.toLowerCase();
+    const bLower = b.toLowerCase();
+    if (aLower === lowerUnassigned) return -1;
+    if (bLower === lowerUnassigned) return 1;
+    return a.localeCompare(b);
+  });
+}
+
+function normalizeMasterList(
+  raw: unknown,
+  strict: boolean
+): { values: string[]; error?: string } {
+  if (!Array.isArray(raw)) {
+    return { values: [], error: "MASTER_DATA_LIST_INVALID" };
+  }
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") {
+      if (strict) return { values: [], error: "MASTER_DATA_ITEM_INVALID" };
+      continue;
+    }
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    if (trimmed.length > MASTER_MAX_LENGTH) {
+      if (strict) return { values: [], error: "MASTER_DATA_ITEM_TOO_LONG" };
+      continue;
+    }
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    values.push(trimmed);
+  }
+
+  if (!seen.has(UNASSIGNED_LABEL.toLowerCase())) {
+    values.push(UNASSIGNED_LABEL);
+  }
+
+  if (values.length > MASTER_MAX_ITEMS) {
+    if (strict) return { values: [], error: "MASTER_DATA_TOO_MANY_ITEMS" };
+    return { values: sortMasterValues(values.slice(0, MASTER_MAX_ITEMS)) };
+  }
+
+  return { values: sortMasterValues(values) };
+}
+
+function parseMasterSettingValue(value: string | null | undefined) {
+  if (!value) return [];
+  try {
+    return JSON.parse(value);
+  } catch {
+    return [];
+  }
+}
+
+async function getMasterDataSnapshot() {
+  if (masterDataCache && Date.now() - masterDataCache.ts < MASTER_CACHE_TTL_MS) {
+    return masterDataCache.data;
+  }
+  const records = await prisma.appSetting.findMany({
+    where: {
+      key: {
+        in: ["master.departments", "master.sites"],
+      },
+    },
+  });
+  const map = new Map(records.map((record) => [record.key, record.value]));
+  const departmentsNormalized = normalizeMasterList(
+    parseMasterSettingValue(map.get("master.departments")),
+    false
+  );
+  const sitesNormalized = normalizeMasterList(
+    parseMasterSettingValue(map.get("master.sites")),
+    false
+  );
+  const data = {
+    departments: departmentsNormalized.values,
+    sites: sitesNormalized.values,
+  };
+  masterDataCache = { ts: Date.now(), data };
+  return data;
+}
+
+function resolveMasterValue(value: string | null | undefined, allowed: string[]) {
+  if (value === null || value === undefined) return { value: null };
+  const trimmed = value.trim();
+  if (!trimmed) return { value: null };
+  const match = allowed.find((item) => item.toLowerCase() === trimmed.toLowerCase());
+  if (!match) return { value: null, error: "INVALID" };
+  return { value: match };
+}
+
+async function getMasterDataUsageRaw() {
+  const [deptGroups, siteGroups] = await Promise.all([
+    prisma.user.groupBy({
+      by: ["dept"],
+      _count: { _all: true },
+    }),
+    prisma.user.groupBy({
+      by: ["site"],
+      _count: { _all: true },
+    }),
+  ]);
+
+  const departments: Record<string, number> = {};
+  const sites: Record<string, number> = {};
+
+  for (const group of deptGroups) {
+    const key = group.dept ?? UNASSIGNED_LABEL;
+    departments[key] = (departments[key] ?? 0) + (group._count?._all ?? 0);
+  }
+
+  for (const group of siteGroups) {
+    const key = group.site ?? UNASSIGNED_LABEL;
+    sites[key] = (sites[key] ?? 0) + (group._count?._all ?? 0);
+  }
+
+  return { departments, sites };
+}
+
+function normalizeUsageToMaster(usage: Record<string, number>, masterList: string[]) {
+  const normalized: Record<string, number> = {};
+  for (const [key, count] of Object.entries(usage)) {
+    const match = masterList.find((item) => item.toLowerCase() === key.toLowerCase());
+    const resolvedKey = match || key;
+    normalized[resolvedKey] = (normalized[resolvedKey] ?? 0) + count;
+  }
+  for (const item of masterList) {
+    if (normalized[item] === undefined) normalized[item] = 0;
+  }
+  return normalized;
+}
+
+async function getMasterDataUsage(masterData: { departments: string[]; sites: string[] }) {
+  const raw = await getMasterDataUsageRaw();
+  return {
+    departments: normalizeUsageToMaster(raw.departments, masterData.departments),
+    sites: normalizeUsageToMaster(raw.sites, masterData.sites),
+  };
 }
 
 function parseTimeString(value: string | null | undefined) {
@@ -353,6 +502,38 @@ function findPreference(preferences: any[], dateStr: string): any | null {
   return null;
 }
 
+const SENSITIVE_AUDIT_KEYS = new Set(["pinhash", "password", "token", "secret", "authorization"]);
+
+function redactSensitive(value: any): any {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map((item) => redactSensitive(item));
+  if (typeof value !== "object") return value;
+  const output: Record<string, any> = {};
+  for (const [key, val] of Object.entries(value)) {
+    if (SENSITIVE_AUDIT_KEYS.has(key.toLowerCase())) continue;
+    output[key] = redactSensitive(val);
+  }
+  return output;
+}
+
+function sanitizeAuditJson(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value);
+    return JSON.stringify(redactSensitive(parsed));
+  } catch {
+    return value;
+  }
+}
+
+function prepareAuditValue(value: any): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    return sanitizeAuditJson(value);
+  }
+  return JSON.stringify(redactSensitive(value));
+}
+
 async function logAudit(params: {
   actorId?: string | null;
   action: string;
@@ -369,8 +550,8 @@ async function logAudit(params: {
       entity: params.entity,
       entityId: params.entityId ?? null,
       reason: params.reason ?? null,
-      before: params.before ? JSON.stringify(params.before) : null,
-      after: params.after ? JSON.stringify(params.after) : null,
+      before: prepareAuditValue(params.before),
+      after: prepareAuditValue(params.after),
     },
   });
 }
@@ -538,6 +719,7 @@ router.post("/auth/login", async (req, res) => {
     employeeId: user.employeeId,
     name: user.name,
     dept: user.dept,
+    site: user.site ?? null,
     role: user.role,
   });
 
@@ -548,6 +730,7 @@ router.post("/auth/login", async (req, res) => {
       name: user.name,
       role: user.role,
       dept: user.dept,
+      site: user.site ?? null,
     },
   });
 });
@@ -1363,7 +1546,7 @@ router.post(
 router.get(
   "/admin/users",
   authMiddleware,
-  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  requireRole([Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
     const query = firstString(req.query.q)?.trim() ?? "";
     const users = await prisma.user.findMany({
@@ -1384,6 +1567,7 @@ router.get(
         employeeId: true,
         name: true,
         dept: true,
+        site: true,
         role: true,
         active: true,
       },
@@ -1396,12 +1580,13 @@ router.get(
 router.post(
   "/admin/users",
   authMiddleware,
-  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  requireRole([Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
     const schema = z.object({
       employeeId: z.string().trim().min(1),
       name: z.string().trim().min(1),
       dept: z.string().trim().optional(),
+      site: z.string().trim().optional(),
       role: z.nativeEnum(Role),
       pin: z.string().trim().min(1),
     });
@@ -1410,13 +1595,22 @@ router.post(
       return res.status(400).json({ error: "Invalid payload" });
     }
     const data = parsed.data;
+    const masterData = await getMasterDataSnapshot();
+    const deptResolved = resolveMasterValue(data.dept, masterData.departments);
+    if (deptResolved.error) {
+      return res.status(400).json({ error: "INVALID_DEPT", allowed: masterData.departments });
+    }
+    const siteResolved = resolveMasterValue(data.site, masterData.sites);
+    if (siteResolved.error) {
+      return res.status(400).json({ error: "INVALID_SITE", allowed: masterData.sites });
+    }
     const pinHash = await bcrypt.hash(data.pin, 10);
-    const deptValue = data.dept?.trim() ? data.dept.trim() : null;
     const user = await prisma.user.create({
       data: {
         employeeId: data.employeeId,
         name: data.name,
-        dept: deptValue,
+        dept: deptResolved.value,
+        site: siteResolved.value,
         role: data.role,
         pinHash,
         active: true,
@@ -1426,6 +1620,7 @@ router.post(
         employeeId: true,
         name: true,
         dept: true,
+        site: true,
         role: true,
         active: true,
       },
@@ -1435,7 +1630,7 @@ router.post(
       action: "CREATE_USER",
       entity: "User",
       entityId: user.id,
-      after: { employeeId: user.employeeId, role: user.role, dept: user.dept, active: user.active },
+      after: { employeeId: user.employeeId, role: user.role, dept: user.dept, site: user.site, active: user.active },
     });
     return res.json(user);
   }
@@ -1444,11 +1639,12 @@ router.post(
 router.put(
   "/admin/users/:id",
   authMiddleware,
-  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  requireRole([Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
     const schema = z.object({
       name: z.string().trim().optional(),
       dept: z.string().trim().nullable().optional(),
+      site: z.string().trim().nullable().optional(),
       role: z.nativeEnum(Role).optional(),
       active: z.boolean().optional(),
       reason: z.string().trim().optional(),
@@ -1469,12 +1665,29 @@ router.put(
       return res.status(404).json({ error: "User not found" });
     }
     const data = parsed.data;
-    const deptValue = data.dept !== undefined ? (data.dept?.trim() ? data.dept.trim() : null) : undefined;
+    const masterData = await getMasterDataSnapshot();
+    let deptValue: string | null | undefined = undefined;
+    if (data.dept !== undefined) {
+      const resolved = resolveMasterValue(data.dept, masterData.departments);
+      if (resolved.error) {
+        return res.status(400).json({ error: "INVALID_DEPT", allowed: masterData.departments });
+      }
+      deptValue = resolved.value;
+    }
+    let siteValue: string | null | undefined = undefined;
+    if (data.site !== undefined) {
+      const resolved = resolveMasterValue(data.site, masterData.sites);
+      if (resolved.error) {
+        return res.status(400).json({ error: "INVALID_SITE", allowed: masterData.sites });
+      }
+      siteValue = resolved.value;
+    }
     const user = await prisma.user.update({
       where: { id: existing.id },
       data: {
         ...(data.name !== undefined ? { name: data.name } : {}),
         ...(deptValue !== undefined ? { dept: deptValue } : {}),
+        ...(siteValue !== undefined ? { site: siteValue } : {}),
         ...(data.role !== undefined ? { role: data.role } : {}),
         ...(data.active !== undefined ? { active: data.active } : {}),
       },
@@ -1483,6 +1696,7 @@ router.put(
         employeeId: true,
         name: true,
         dept: true,
+        site: true,
         role: true,
         active: true,
       },
@@ -1493,8 +1707,20 @@ router.put(
       entity: "User",
       entityId: user.id,
       reason: data.reason ?? null,
-      before: { name: existing.name, dept: existing.dept, role: existing.role, active: existing.active },
-      after: { name: user.name, dept: user.dept, role: user.role, active: user.active },
+      before: {
+        name: existing.name,
+        dept: existing.dept,
+        site: existing.site,
+        role: existing.role,
+        active: existing.active,
+      },
+      after: {
+        name: user.name,
+        dept: user.dept,
+        site: user.site,
+        role: user.role,
+        active: user.active,
+      },
     });
     return res.json(user);
   }
@@ -1543,7 +1769,7 @@ router.post(
 router.post(
   "/admin/users/import",
   authMiddleware,
-  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  requireRole([Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),
   async (req, res) => {
     const schema = z.object({
       users: z.array(
@@ -1551,6 +1777,7 @@ router.post(
           employeeId: z.string().trim().min(1),
           name: z.string().trim().min(1),
           dept: z.string().trim().optional(),
+          site: z.string().trim().optional(),
           role: z.nativeEnum(Role),
           pin: z.string().trim().min(1),
         })
@@ -1561,25 +1788,43 @@ router.post(
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
     }
+    const masterData = await getMasterDataSnapshot();
     const results = [];
     for (const item of parsed.data.users) {
+      const deptResolved = resolveMasterValue(item.dept, masterData.departments);
+      if (deptResolved.error) {
+        return res.status(400).json({ error: "INVALID_DEPT", allowed: masterData.departments });
+      }
+      const siteResolved = resolveMasterValue(item.site, masterData.sites);
+      if (siteResolved.error) {
+        return res.status(400).json({ error: "INVALID_SITE", allowed: masterData.sites });
+      }
       const pinHash = await bcrypt.hash(item.pin, 10);
-      const deptValue = item.dept?.trim() ? item.dept.trim() : null;
       const user = await prisma.user.upsert({
         where: { employeeId: item.employeeId },
         create: {
           employeeId: item.employeeId,
           name: item.name,
-          dept: deptValue,
+          dept: deptResolved.value,
+          site: siteResolved.value,
           role: item.role,
           pinHash,
           active: true,
         },
         update: {
           name: item.name,
-          dept: deptValue,
+          dept: deptResolved.value,
+          site: siteResolved.value,
           role: item.role,
           pinHash,
+          active: true,
+        },
+        select: {
+          id: true,
+          employeeId: true,
+          role: true,
+          dept: true,
+          site: true,
           active: true,
         },
       });
@@ -1589,7 +1834,7 @@ router.post(
         entity: "User",
         entityId: user.id,
         reason: parsed.data.reason ?? null,
-        after: { employeeId: user.employeeId, role: user.role, dept: user.dept, active: user.active },
+        after: { employeeId: user.employeeId, role: user.role, dept: user.dept, site: user.site, active: user.active },
       });
       results.push(user);
     }
@@ -2290,11 +2535,141 @@ router.get(
       }),
     ]);
 
+    const sanitizedItems = items.map((item) => ({
+      ...item,
+      before: sanitizeAuditJson(item.before),
+      after: sanitizeAuditJson(item.after),
+    }));
+
     return res.json({
       page,
       pageSize,
       total,
-      items,
+      items: sanitizedItems,
+    });
+  }
+);
+
+router.get(
+  "/admin/master-data",
+  authMiddleware,
+  requireRole([Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (_req, res) => {
+    const masterData = await getMasterDataSnapshot();
+    const usage = await getMasterDataUsage(masterData);
+    return res.json({
+      departments: masterData.departments,
+      sites: masterData.sites,
+      usage,
+    });
+  }
+);
+
+router.put(
+  "/admin/master-data",
+  authMiddleware,
+  requireRole([Role.SUPER_ADMIN]),
+  async (req, res) => {
+    const schema = z.object({
+      departments: z.array(z.string()),
+      sites: z.array(z.string()),
+      reason: z.string().trim().min(1),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success || !req.user) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+
+    const departmentsNormalized = normalizeMasterList(parsed.data.departments, true);
+    if (departmentsNormalized.error) {
+      return res.status(400).json({ error: departmentsNormalized.error });
+    }
+    const sitesNormalized = normalizeMasterList(parsed.data.sites, true);
+    if (sitesNormalized.error) {
+      return res.status(400).json({ error: sitesNormalized.error });
+    }
+
+    const usageRaw = await getMasterDataUsageRaw();
+    const missingDepartments = Object.keys(usageRaw.departments).filter((value) => {
+      if (usageRaw.departments[value] <= 0) return false;
+      return !departmentsNormalized.values.some(
+        (allowed) => allowed.toLowerCase() === value.toLowerCase()
+      );
+    });
+    const missingSites = Object.keys(usageRaw.sites).filter((value) => {
+      if (usageRaw.sites[value] <= 0) return false;
+      return !sitesNormalized.values.some(
+        (allowed) => allowed.toLowerCase() === value.toLowerCase()
+      );
+    });
+
+    if (missingDepartments.length || missingSites.length) {
+      return res.status(409).json({
+        error: "MASTER_DATA_IN_USE",
+        missingDepartments,
+        missingSites,
+      });
+    }
+
+    const existing = await prisma.appSetting.findMany({
+      where: { key: { in: ["master.departments", "master.sites"] } },
+    });
+    const existingDept = existing.find((item) => item.key === "master.departments")?.value;
+    const existingSites = existing.find((item) => item.key === "master.sites")?.value;
+    const before = {
+      departments: normalizeMasterList(
+        parseMasterSettingValue(existingDept),
+        false
+      ).values,
+      sites: normalizeMasterList(
+        parseMasterSettingValue(existingSites),
+        false
+      ).values,
+    };
+
+    await prisma.$transaction([
+      prisma.appSetting.upsert({
+        where: { key: "master.departments" },
+        create: {
+          key: "master.departments",
+          value: JSON.stringify(departmentsNormalized.values),
+          updatedById: req.user.id,
+        },
+        update: {
+          value: JSON.stringify(departmentsNormalized.values),
+          updatedById: req.user.id,
+        },
+      }),
+      prisma.appSetting.upsert({
+        where: { key: "master.sites" },
+        create: {
+          key: "master.sites",
+          value: JSON.stringify(sitesNormalized.values),
+          updatedById: req.user.id,
+        },
+        update: {
+          value: JSON.stringify(sitesNormalized.values),
+          updatedById: req.user.id,
+        },
+      }),
+    ]);
+
+    masterDataCache = null;
+    await logAudit({
+      actorId: req.user.id,
+      action: "UPDATE_MASTER_DATA",
+      entity: "AppSetting",
+      reason: parsed.data.reason,
+      before,
+      after: {
+        departments: departmentsNormalized.values,
+        sites: sitesNormalized.values,
+      },
+    });
+
+    return res.json({
+      departments: departmentsNormalized.values,
+      sites: sitesNormalized.values,
     });
   }
 );
@@ -2333,6 +2708,7 @@ router.get(
         employeeId: true,
         name: true,
         dept: true,
+        site: true,
         role: true,
       },
     });
