@@ -12,6 +12,7 @@ import AdminDefaults from "./pages/AdminDefaults.jsx";
 import Kiosk from "./pages/Kiosk.jsx";
 import Settings from "./pages/Settings.jsx";
 import Requests from "./pages/Requests.jsx";
+import AuditLog from "./pages/AuditLog.jsx";
 
 function ProtectedRoute({ children, roles }) {
   const session = getSession();
@@ -75,6 +76,7 @@ export default function App() {
   const canReport = role === "SUPERVISOR" || role === "ADMIN" || role === "HR_ADMIN" || role === "SUPER_ADMIN";
   const canSupervisor = role === "SUPERVISOR" || role === "HR_ADMIN" || role === "SUPER_ADMIN";
   const canAdmin = role === "HR_ADMIN" || role === "SUPER_ADMIN";
+  const canAudit = role === "HR_ADMIN" || role === "SUPER_ADMIN";
   const canKiosk = role === "GROUND_STAFF" || role === "SUPER_ADMIN";
   const canSettings = role === "SUPER_ADMIN";
   const navLinks = [
@@ -86,6 +88,7 @@ export default function App() {
     { to: "/admin/users", label: "Users", show: canAdmin },
     { to: "/admin/defaults", label: "Defaults", show: canAdmin },
     { to: "/requests", label: "Requests", show: canAdmin },
+    { to: "/audit", label: "Audit", show: canAudit },
     { to: "/kiosk", label: "Kiosk", show: canKiosk },
     { to: "/settings", label: "Settings", show: canSettings },
   ];
@@ -188,6 +191,14 @@ export default function App() {
           element={
             <ProtectedRoute roles={["HR_ADMIN", "SUPER_ADMIN"]}>
               <Requests />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/audit"
+          element={
+            <ProtectedRoute roles={["HR_ADMIN", "SUPER_ADMIN"]}>
+              <AuditLog />
             </ProtectedRoute>
           }
         />

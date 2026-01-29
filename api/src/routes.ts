@@ -2188,6 +2188,118 @@ router.put(
 );
 
 router.get(
+  "/admin/audit-meta",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (_req, res) => {
+    const [actions, entities] = await Promise.all([
+      prisma.auditLog.findMany({
+        distinct: ["action"],
+        select: { action: true },
+        orderBy: { action: "asc" },
+      }),
+      prisma.auditLog.findMany({
+        distinct: ["entity"],
+        select: { entity: true },
+        orderBy: { entity: "asc" },
+      }),
+    ]);
+    return res.json({
+      actions: actions.map((item) => item.action).filter(Boolean),
+      entities: entities.map((item) => item.entity).filter(Boolean),
+    });
+  }
+);
+
+router.get(
+  "/admin/audit-logs",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (req, res) => {
+    const pageRaw = Number(firstString(req.query.page) ?? 1);
+    const pageSizeRaw = Number(firstString(req.query.pageSize) ?? 50);
+    const page = Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 1;
+    const pageSize = Number.isFinite(pageSizeRaw)
+      ? Math.min(200, Math.max(1, Math.floor(pageSizeRaw)))
+      : 50;
+    const from = firstString(req.query.from)?.trim();
+    const to = firstString(req.query.to)?.trim();
+    const action = firstString(req.query.action)?.trim();
+    const entity = firstString(req.query.entity)?.trim();
+    const q = firstString(req.query.q)?.trim();
+
+    if (from && !dateOnlySchema.safeParse(from).success) {
+      return res.status(400).json({ error: "Invalid from date" });
+    }
+    if (to && !dateOnlySchema.safeParse(to).success) {
+      return res.status(400).json({ error: "Invalid to date" });
+    }
+
+    const settings = await getSettingsSnapshot();
+    const timezone = settings?.timezone || getDefaultSettings().timezone;
+
+    // Interpret from/to as local dates in settings.timezone.
+    // Inclusive "to" => endExclusive at local midnight of (to + 1 day).
+    const createdAt: { gte?: Date; lt?: Date } = {};
+    if (from) {
+      createdAt.gte = zonedTimeToUtc(from, "00:00", timezone);
+    }
+    if (to) {
+      const endExclusive = addDaysToDateString(to, 1);
+      createdAt.lt = zonedTimeToUtc(endExclusive, "00:00", timezone);
+    }
+
+    const where: any = {};
+    if (Object.keys(createdAt).length) {
+      where.createdAt = createdAt;
+    }
+    if (action) {
+      where.action = action;
+    }
+    if (entity) {
+      where.entity = entity;
+    }
+    if (q) {
+      where.OR = [
+        { reason: { contains: q, mode: "insensitive" } },
+        { entityId: { contains: q, mode: "insensitive" } },
+        { action: { contains: q, mode: "insensitive" } },
+        { entity: { contains: q, mode: "insensitive" } },
+        { actor: { is: { name: { contains: q, mode: "insensitive" } } } },
+        { actor: { is: { employeeId: { contains: q, mode: "insensitive" } } } },
+      ];
+    }
+
+    const [total, items] = await Promise.all([
+      prisma.auditLog.count({ where }),
+      prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: "desc" }, // newest first
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        include: {
+          actor: {
+            select: {
+              id: true,
+              employeeId: true,
+              name: true,
+              role: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    return res.json({
+      page,
+      pageSize,
+      total,
+      items,
+    });
+  }
+);
+
+router.get(
   "/users",
   authMiddleware,
   requireRole([Role.SUPERVISOR, Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),

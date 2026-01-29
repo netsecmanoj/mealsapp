@@ -187,6 +187,23 @@ export async function adminListUsers(query = "") {
   return apiFetch(`/api/admin/users${q}`, { method: "GET" });
 }
 
+export async function adminGetAuditMeta() {
+  return apiFetch("/api/admin/audit-meta", { method: "GET" });
+}
+
+export async function adminGetAuditLogs(params = {}) {
+  const searchParams = new URLSearchParams();
+  if (params.page) searchParams.set("page", String(params.page));
+  if (params.pageSize) searchParams.set("pageSize", String(params.pageSize));
+  if (params.from) searchParams.set("from", params.from);
+  if (params.to) searchParams.set("to", params.to);
+  if (params.action) searchParams.set("action", params.action);
+  if (params.entity) searchParams.set("entity", params.entity);
+  if (params.q) searchParams.set("q", params.q);
+  const suffix = searchParams.toString();
+  return apiFetch(`/api/admin/audit-logs${suffix ? `?${suffix}` : ""}`, { method: "GET" });
+}
+
 export async function adminCreateUser(payload) {
   return apiFetch("/api/admin/users", {
     method: "POST",
