@@ -1,109 +1,34 @@
-# Meals App Deployment (Docker + Nginx + GitLab CI/CD)
+# Meals App Deployment (Docker + Nginx)
 
-This deploys the Vite web app behind Nginx and the Node/Express API in Docker, with SQLite persisted on the host.
+This is a quick deployment summary. For the full runbook and upgrade steps, see docs/DEPLOYMENT.md.
 
-## One-time server setup
+## Server paths (defaults)
+- Repo: `/home/ubuntu/meals-app/current`
+- Env file: `/home/ubuntu/meals-app/config/api.env`
+- DB dir: `/home/ubuntu/meals-app/db`
+- DB file: `/home/ubuntu/meals-app/db/meals.sqlite`
 
-1) Install Docker and Docker Compose:
-```sh
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl gnupg
-sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-sudo chmod a+r /etc/apt/keyrings/docker.gpg
+These paths can be overridden for local runs using:
+- `API_ENV_FILE` (env file path)
+- `API_DB_DIR` (host DB directory mounted to `/data`)
 
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+## Minimal deploy flow
+```bash
+cd /home/ubuntu/meals-app/current
 
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+docker compose build
+# Apply migrations before starting containers
+docker compose run --rm api npx prisma migrate deploy
+
+docker compose up -d --remove-orphans
 ```
 
-2) Allow ubuntu user to run Docker without sudo:
-```sh
-sudo usermod -aG docker ubuntu
-```
-Log out and back in for group changes to apply.
-
-3) Create runtime directories:
-```sh
-sudo mkdir -p /home/ubuntu/meals-app/db
-sudo mkdir -p /home/ubuntu/meals-app/config
-sudo touch /home/ubuntu/meals-app/db/meals.sqlite
-sudo chown -R ubuntu:ubuntu /home/ubuntu/meals-app
-```
-
-4) Create `/home/ubuntu/meals-app/config/api.env` (secrets live on server, not in repo):
-```sh
-DATABASE_URL=file:/data/meals.sqlite
-JWT_SECRET=replace-with-strong-secret
-PORT=4000
-HOST=0.0.0.0
-```
-
-5) Ensure firewall allows SSH and app port:
-- TCP 22 (restricted)
-- TCP 8095 (public)
-- 443 optional for later TLS termination
-
-## GitLab CI/CD variables
-
-Required variables in GitLab project settings:
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
-- `SSH_PRIVATE_KEY`
-
-Optional variables:
-- `SSH_PORT` (default: 22)
-- `DEPLOY_PATH` (default: /home/ubuntu/meals-app)
-
-## GitLab Runner prerequisites
-
-- Runner needs outbound SSH access to the server.
-- CI pipeline is configured to run only on the `development` branch.
-
-## Server layout (runtime)
-
-- `/home/ubuntu/meals-app/current` (synced repo contents)
-- `/home/ubuntu/meals-app/config/api.env` (secrets + DATABASE_URL)
-- `/home/ubuntu/meals-app/db/meals.sqlite` (persistent database)
-
-## Deployment flow (from development branch)
-
-1) CI syncs repo to `/home/ubuntu/meals-app/current` (via rsync).
-2) CI runs on the server:
-- `docker compose build`
-- `docker compose run --rm api npx prisma migrate deploy`
-- `docker compose up -d --remove-orphans`
-
-## Local verification (optional)
-
-Run from repo root:
-```sh
-docker compose up --build
-```
-Then test:
-- Web: http://localhost:8095
-- API health (via proxy): http://localhost:8095/api/health
-
-## Server verification
-
-```sh
+## Verify
+```bash
 curl -i http://<server-ip>:8095/api/health
-docker compose logs -f api
 ```
-
-## PWA note
-
-PWA install prompts typically require HTTPS (except localhost during development).
-
-## Rollback
-
-Re-run the pipeline for a previous commit on the `development` branch to sync and rebuild that version on the server.
 
 ## Notes
-- SQLite is persisted at `/home/ubuntu/meals-app/db/meals.sqlite` and mounted into the API container at `/data/meals.sqlite`.
-- Deploys use `npx prisma migrate deploy` only. No resets or seeding.
-- Frontend calls the API at the same domain via `/api`.
+- Web is exposed on port `8095` (host) -> `80` (container).
+- API is exposed on port `4000` (host) -> `4000` (container).
+- SQLite is mounted into the API container at `/data`.

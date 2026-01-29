@@ -7,9 +7,9 @@ services:
     ports:
       - "4000:4000"
     env_file:
-      - /home/ubuntu/meals-app/config/api.env
+      - ${API_ENV_FILE:-/home/ubuntu/meals-app/config/api.env}
     volumes:
-      - /home/ubuntu/meals-app/db:/data
+      - ${API_DB_DIR:-/home/ubuntu/meals-app/db}:/data
     restart: unless-stopped
 
   web:
