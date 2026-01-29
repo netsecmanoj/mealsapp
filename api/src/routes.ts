@@ -215,6 +215,15 @@ function parseMasterSettingValue(value: string | null | undefined) {
   }
 }
 
+function hasUnassigned(raw: unknown): boolean {
+  if (!Array.isArray(raw)) return false;
+  return raw.some(
+    (item) =>
+      typeof item === "string" &&
+      item.trim().toLowerCase() === UNASSIGNED_LABEL.toLowerCase()
+  );
+}
+
 async function getMasterDataSnapshot() {
   if (masterDataCache && Date.now() - masterDataCache.ts < MASTER_CACHE_TTL_MS) {
     return masterDataCache.data;
@@ -1595,6 +1604,15 @@ router.post(
       return res.status(400).json({ error: "Invalid payload" });
     }
     const data = parsed.data;
+    if (req.user.role === Role.ADMIN) {
+      const allowedRoles = new Set([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
+      if (!allowedRoles.has(data.role)) {
+        return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
+      }
+    }
+    if (req.user.role === Role.HR_ADMIN && data.role === Role.SUPER_ADMIN) {
+      return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
+    }
     const masterData = await getMasterDataSnapshot();
     const deptResolved = resolveMasterValue(data.dept, masterData.departments);
     if (deptResolved.error) {
@@ -1665,6 +1683,23 @@ router.put(
       return res.status(404).json({ error: "User not found" });
     }
     const data = parsed.data;
+    if (req.user.role === Role.ADMIN) {
+      const allowedRoles = new Set([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
+      if (existing.role === Role.HR_ADMIN || existing.role === Role.SUPER_ADMIN) {
+        return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
+      }
+      if (data.role !== undefined && !allowedRoles.has(data.role)) {
+        return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
+      }
+    }
+    if (req.user.role === Role.HR_ADMIN) {
+      if (existing.role === Role.SUPER_ADMIN) {
+        return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
+      }
+      if (data.role === Role.SUPER_ADMIN) {
+        return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
+      }
+    }
     const masterData = await getMasterDataSnapshot();
     let deptValue: string | null | undefined = undefined;
     if (data.dept !== undefined) {
@@ -1787,6 +1822,19 @@ router.post(
     const parsed = schema.safeParse(req.body);
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
+    }
+    if (req.user.role === Role.ADMIN) {
+      const allowedRoles = new Set([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
+      const invalid = parsed.data.users.find((item) => !allowedRoles.has(item.role));
+      if (invalid) {
+        return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
+      }
+    }
+    if (req.user.role === Role.HR_ADMIN) {
+      const invalid = parsed.data.users.find((item) => item.role === Role.SUPER_ADMIN);
+      if (invalid) {
+        return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
+      }
     }
     const masterData = await getMasterDataSnapshot();
     const results = [];
@@ -2578,6 +2626,21 @@ router.put(
     const parsed = schema.safeParse(req.body);
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
+    }
+
+    if (!hasUnassigned(parsed.data.departments)) {
+      return res.status(409).json({
+        error: "CANNOT_REMOVE_UNASSIGNED",
+        field: "departments",
+        value: UNASSIGNED_LABEL,
+      });
+    }
+    if (!hasUnassigned(parsed.data.sites)) {
+      return res.status(409).json({
+        error: "CANNOT_REMOVE_UNASSIGNED",
+        field: "sites",
+        value: UNASSIGNED_LABEL,
+      });
     }
 
     const departmentsNormalized = normalizeMasterList(parsed.data.departments, true);

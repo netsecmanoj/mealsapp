@@ -148,7 +148,8 @@ export default function MasterData() {
         <div className="list">
           {departments.map((dept) => {
             const count = usage.departments?.[dept] ?? 0;
-            const disabled = count > 0 || isUnassigned(dept);
+            const unassigned = isUnassigned(dept);
+            const disabled = count > 0;
             return (
               <div className="list-row" key={dept}>
                 <div className="list-main">
@@ -159,10 +160,13 @@ export default function MasterData() {
                   <button
                     className="button secondary"
                     onClick={() => removeDepartment(dept)}
-                    disabled={disabled}
+                    disabled={disabled || unassigned}
                   >
                     Remove
                   </button>
+                  {unassigned ? (
+                    <span className="muted">Unassigned cannot be removed</span>
+                  ) : null}
                 </div>
               </div>
             );
@@ -187,7 +191,8 @@ export default function MasterData() {
         <div className="list">
           {sites.map((site) => {
             const count = usage.sites?.[site] ?? 0;
-            const disabled = count > 0 || isUnassigned(site);
+            const unassigned = isUnassigned(site);
+            const disabled = count > 0;
             return (
               <div className="list-row" key={site}>
                 <div className="list-main">
@@ -198,10 +203,13 @@ export default function MasterData() {
                   <button
                     className="button secondary"
                     onClick={() => removeSite(site)}
-                    disabled={disabled}
+                    disabled={disabled || unassigned}
                   >
                     Remove
                   </button>
+                  {unassigned ? (
+                    <span className="muted">Unassigned cannot be removed</span>
+                  ) : null}
                 </div>
               </div>
             );
