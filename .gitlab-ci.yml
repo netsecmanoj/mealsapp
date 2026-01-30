@@ -1,5 +1,18 @@
 stages:
+  - verify
   - deploy
+
+verify:build:
+  stage: verify
+  image: node:20-alpine
+  script:
+    - cd api
+    - npm ci
+    - npx prisma generate
+    - npm run build
+    - cd ../web
+    - npm ci
+    - npm run build
 
 deploy:
   stage: deploy

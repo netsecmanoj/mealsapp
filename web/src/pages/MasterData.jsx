@@ -120,7 +120,7 @@ export default function MasterData() {
     }
   };
 
-  const isUnassigned = (value) => value.toLowerCase() === UNASSIGNED_LABEL.toLowerCase();
+  const isUnassigned = (value) => value.trim().toLowerCase() === UNASSIGNED_LABEL.toLowerCase();
 
   return (
     <div className="app">

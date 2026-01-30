@@ -1,14 +1,6 @@
 import "dotenv/config";
 import bcrypt from "bcryptjs";
-import prismaPkg from "@prisma/client";
-
-const { PrismaClient, MealType, Role } = prismaPkg as unknown as {
-  PrismaClient: typeof import("@prisma/client").PrismaClient;
-  MealType: typeof import("@prisma/client").MealType;
-  Role: typeof import("@prisma/client").Role;
-};
-type MealTypeType = (typeof MealType)[keyof typeof MealType];
-type RoleType = (typeof Role)[keyof typeof Role];
+import { MealType, PrismaClient, Role } from "@prisma/client";
 
 const prisma = new PrismaClient();
 

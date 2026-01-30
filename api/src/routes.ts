@@ -1,17 +1,10 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import prismaPkg from "@prisma/client";
+import { MealRequestStatus, MealType, PrismaClient, Role, Source } from "@prisma/client";
 import { authMiddleware, requireRole, signToken } from "./auth.js";
 import { addDaysToDateString, getZonedDateString, zonedTimeToUtc } from "./timezone.js";
 
-const { PrismaClient, MealRequestStatus, MealType, Role, Source } = prismaPkg as unknown as {
-  PrismaClient: typeof import("@prisma/client").PrismaClient;
-  MealRequestStatus: typeof import("@prisma/client").MealRequestStatus;
-  MealType: typeof import("@prisma/client").MealType;
-  Role: typeof import("@prisma/client").Role;
-  Source: typeof import("@prisma/client").Source;
-};
 type MealRequestStatusType = (typeof MealRequestStatus)[keyof typeof MealRequestStatus];
 type MealTypeType = (typeof MealType)[keyof typeof MealType];
 type RoleType = (typeof Role)[keyof typeof Role];
@@ -1605,8 +1598,8 @@ router.post(
     }
     const data = parsed.data;
     if (req.user.role === Role.ADMIN) {
-      const allowedRoles = new Set<RoleType>([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
-      if (!allowedRoles.has(data.role)) {
+      const allowedRoles = new Set<string>([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
+      if (!allowedRoles.has(String(data.role))) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
       }
     }
@@ -1684,11 +1677,11 @@ router.put(
     }
     const data = parsed.data;
     if (req.user.role === Role.ADMIN) {
-      const allowedRoles = new Set<RoleType>([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
+      const allowedRoles = new Set<string>([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
       if (existing.role === Role.HR_ADMIN || existing.role === Role.SUPER_ADMIN) {
         return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
       }
-      if (data.role !== undefined && !allowedRoles.has(data.role)) {
+      if (data.role !== undefined && !allowedRoles.has(String(data.role))) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
       }
     }
@@ -1824,8 +1817,8 @@ router.post(
       return res.status(400).json({ error: "Invalid payload" });
     }
     if (req.user.role === Role.ADMIN) {
-      const allowedRoles = new Set<RoleType>([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
-      const invalid = parsed.data.users.find((item) => !allowedRoles.has(item.role));
+      const allowedRoles = new Set<string>([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
+      const invalid = parsed.data.users.find((item) => !allowedRoles.has(String(item.role)));
       if (invalid) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
       }

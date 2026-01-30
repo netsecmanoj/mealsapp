@@ -1,8 +1,4 @@
-import prismaPkg from "@prisma/client";
-
-const { PrismaClient } = prismaPkg as unknown as {
-  PrismaClient: typeof import("@prisma/client").PrismaClient;
-};
+import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 const SENSITIVE_KEYS = new Set(["pinhash", "password", "token", "secret", "authorization"]);
