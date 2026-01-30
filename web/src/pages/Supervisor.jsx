@@ -99,6 +99,19 @@ export default function Supervisor() {
       });
   }, [mode, selectedVisitor, date]);
 
+  useEffect(() => {
+    if (mode === "visitor") return;
+    setVisitorQuery("");
+    setVisitorResults([]);
+    setSelectedVisitor(null);
+    setVisitorForm({ name: "", phone: "", company: "" });
+    setVisitorMealsState({
+      BREAKFAST: null,
+      LUNCH: null,
+      DINNER: null,
+    });
+  }, [mode]);
+
   const handleChoice = async (mealType, wantMeal) => {
     setMessage("");
     setError("");
@@ -233,7 +246,8 @@ export default function Supervisor() {
               ))}
             </select>
           </div>
-        ) : (
+        ) : null}
+        {mode === "visitor" ? (
           <>
             <div className="field">
               <label htmlFor="visitorSearch">Search visitor by name/phone</label>
@@ -300,7 +314,7 @@ export default function Supervisor() {
               </div>
             ) : null}
           </>
-        )}
+        ) : null}
         {mode === "ground" ? (
           <>
             <div className="field">
