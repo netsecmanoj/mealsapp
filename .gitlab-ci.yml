@@ -4,7 +4,10 @@ stages:
 
 verify:build:
   stage: verify
-  image: node:20-alpine
+  image: node:20-slim
+  tags:
+    - docker
+    - serverless
   script:
     - cd api
     - npm ci
