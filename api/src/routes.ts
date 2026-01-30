@@ -1245,6 +1245,8 @@ router.post(
     }
 
     const now = new Date();
+    const blocked: Array<{ date: string; mealType: MealTypeType; reason: "OFFICE_CLOSED" | "MEAL_DISABLED" }> = [];
+    const violations: Array<{ date: string; mealType: MealTypeType; cutoff: string; timezone: string }> = [];
     for (const date of dates) {
       if (isPastServiceDate(date, settings)) {
         return sendPastDate(res, { date, timezone });
@@ -1252,21 +1254,31 @@ router.post(
       const serviceDay = await getEffectiveServiceDay(date);
       for (const mealType of meals) {
         if (!isMealServed(serviceDay, mealType)) {
-          return sendMealNotServed(res, { date, mealType });
+          blocked.push({
+            date,
+            mealType,
+            reason: serviceDay.isOfficeOpen ? "MEAL_DISABLED" : "OFFICE_CLOSED",
+          });
+          continue;
         }
         const cutoffDate = getCutoffDate(date, mealType, serviceDay, settings);
-        if (now > cutoffDate && !isHrOverride) {
-          return sendCutoffPassed(res, {
-            mealType,
-            cutoffLabel: getCutoffTimeLabel(mealType, serviceDay, settings),
-            timezone,
-            cutoffDayOffset: getCutoffDayOffset(mealType, settings),
-          });
-        }
-        if (now > cutoffDate && isHrOverride && !overrideReason) {
-          return res.status(400).json({ error: "Override reason required after cutoff" });
+        if (now > cutoffDate) {
+          if (!isHrOverride || !overrideReason) {
+            violations.push({
+              date,
+              mealType,
+              cutoff: getCutoffTimeLabel(mealType, serviceDay, settings),
+              timezone,
+            });
+          }
         }
       }
+    }
+    if (blocked.length) {
+      return res.status(400).json({ error: "MEAL_NOT_SERVED", details: { blocked } });
+    }
+    if (violations.length) {
+      return res.status(400).json({ error: "CUTOFF_PASSED", details: { violations } });
     }
 
     let targetUsers: Array<{ id: string; employeeId: string }> = [];

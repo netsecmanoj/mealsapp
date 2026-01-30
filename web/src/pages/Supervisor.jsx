@@ -33,6 +33,9 @@ export default function Supervisor() {
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [bulkErrorDetails, setBulkErrorDetails] = useState(null);
+  const [showMembers, setShowMembers] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
   const [overrides, setOverrides] = useState({});
   const [visitorQuery, setVisitorQuery] = useState("");
   const [visitorResults, setVisitorResults] = useState([]);
@@ -161,6 +164,18 @@ export default function Supervisor() {
   }, [mode]);
 
   useEffect(() => {
+    if (mode === "ground") return;
+    setBulkErrorDetails(null);
+    setShowMembers(false);
+    setCopyStatus("");
+  }, [mode]);
+
+  useEffect(() => {
+    if (!showMembers) return;
+    setCopyStatus("");
+  }, [showMembers]);
+
+  useEffect(() => {
     if (!isAdminScopeRole) return;
     setScopeSupervisor("");
   }, [scopeSite, isAdminScopeRole]);
@@ -189,23 +204,31 @@ export default function Supervisor() {
       .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
   }, [adminUsers, isAdminScopeRole, scopeSite]);
 
-  const groundStaffCount = useMemo(() => {
-    if (mode !== "ground") return 0;
+  const scopedGroundStaff = useMemo(() => {
+    if (mode !== "ground") return [];
     if (isSupervisorRole) {
-      return users.filter((user) => user.role === "GROUND_STAFF").length;
+      return users.filter((user) => user.role === "GROUND_STAFF");
     }
     if (isAdminScopeRole) {
-      if (!scopeSite || isUnassignedValue(scopeSite)) return 0;
+      if (!scopeSite || isUnassignedValue(scopeSite)) return [];
       let list = adminUsers.filter(
         (user) => user.role === "GROUND_STAFF" && user.active && user.site === scopeSite
       );
       if (scopeSupervisor) {
         list = list.filter((user) => user.supervisorEmployeeId === scopeSupervisor);
       }
-      return list.length;
+      return list;
     }
-    return users.filter((user) => user.role === "GROUND_STAFF").length;
+    return users.filter((user) => user.role === "GROUND_STAFF");
   }, [adminUsers, isAdminScopeRole, isSupervisorRole, mode, scopeSite, scopeSupervisor, users]);
+  const groundStaffCount = scopedGroundStaff.length;
+  const memberLines = useMemo(
+    () =>
+      scopedGroundStaff.map(
+        (member) => `${member.employeeId} - ${member.name || "Ground Staff"}`
+      ),
+    [scopedGroundStaff]
+  );
 
   const handleChoice = async (mealType, wantMeal) => {
     setMessage("");
@@ -232,6 +255,7 @@ export default function Supervisor() {
   const handleBulkSubmit = async () => {
     setMessage("");
     setError("");
+    setBulkErrorDetails(null);
     if (!bulkMeals.length) {
       setError("Select at least one meal");
       return;
@@ -249,6 +273,7 @@ export default function Supervisor() {
     const from = bulkUseRange ? bulkFrom : date;
     const to = bulkUseRange ? bulkTo : date;
     try {
+      setCopyStatus("");
       const payload = {
         from,
         to,
@@ -273,6 +298,13 @@ export default function Supervisor() {
       );
     } catch (err) {
       setError(err.message || "Failed");
+      const details = err?.details;
+      if (details?.blocked || details?.violations) {
+        setBulkErrorDetails({
+          blocked: Array.isArray(details.blocked) ? details.blocked : [],
+          violations: Array.isArray(details.violations) ? details.violations : [],
+        });
+      }
     }
   };
 
@@ -447,6 +479,14 @@ export default function Supervisor() {
                       : currentEmployeeId || "Unknown"}
                   </div>
                   <div className="row-status">Count: {groundStaffCount}</div>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => setShowMembers(true)}
+                    disabled={!groundStaffCount}
+                  >
+                    View members ({groundStaffCount})
+                  </button>
                   {!currentSite || isUnassignedValue(currentSite) ? (
                     <div className="message error">Your site is unassigned. Bulk apply is disabled.</div>
                   ) : null}
@@ -495,6 +535,14 @@ export default function Supervisor() {
                       : "Select a site"}
                   </div>
                   <div className="row-status">Count: {scopeSite ? groundStaffCount : 0}</div>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => setShowMembers(true)}
+                    disabled={!scopeSite || !groundStaffCount}
+                  >
+                    View members ({groundStaffCount})
+                  </button>
                 </>
               ) : null}
             </div>
@@ -587,7 +635,7 @@ export default function Supervisor() {
             />
           </div>
         )}
-        {isHr ? (
+        {mode === "ground" || isHr ? (
           <div className="field">
             <label htmlFor="reason">Override reason (required after cutoff)</label>
             <input
@@ -660,7 +708,80 @@ export default function Supervisor() {
         ) : null}
       </div>
       {message ? <div className="message success">{message}</div> : null}
-      {error ? <div className="message error">{error}</div> : null}
+      {error ? (
+        <div className="message error">
+          <div>{error}</div>
+          {mode === "ground" && bulkErrorDetails ? (
+            <div>
+              {bulkErrorDetails.blocked?.length ? (
+                <div>
+                  {bulkErrorDetails.blocked.map((item, index) => (
+                    <div key={`${item.date}-${item.mealType}-${index}`}>
+                      Meal not served: {item.date} ({item.mealType})
+                      {item.reason ? ` - ${item.reason.replaceAll("_", " ").toLowerCase()}` : ""}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {bulkErrorDetails.violations?.length ? (
+                <div>
+                  {bulkErrorDetails.violations.map((item, index) => (
+                    <div key={`${item.date}-${item.mealType}-${index}`}>
+                      Cutoff passed: {item.date} ({item.mealType}) cutoff {item.cutoff}{" "}
+                      {item.timezone ? `(${item.timezone})` : ""}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <div className="muted">Check Calendar/Defaults → Service Days.</div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {showMembers ? (
+        <div className="modal-backdrop" onClick={() => setShowMembers(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Ground Staff Members ({groundStaffCount})</h3>
+              <button className="button secondary" type="button" onClick={() => setShowMembers(false)}>
+                Close
+              </button>
+            </div>
+            {scopedGroundStaff.length ? (
+              <div className="list modal-list">
+                {scopedGroundStaff.map((member) => (
+                  <div className="list-row" key={member.employeeId}>
+                    <div>
+                      <div className="row-title">{member.name || "Ground Staff"}</div>
+                      <div className="row-status">{member.employeeId}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted">No ground staff in scope.</div>
+            )}
+            <div className="modal-actions">
+              <button
+                className="button"
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(memberLines.join("\n"));
+                    setCopyStatus("Copied list to clipboard.");
+                  } catch (err) {
+                    setCopyStatus("Unable to copy list.");
+                  }
+                }}
+                disabled={!scopedGroundStaff.length}
+              >
+                Copy list
+              </button>
+              {copyStatus ? <div className="muted">{copyStatus}</div> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
