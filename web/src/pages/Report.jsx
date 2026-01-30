@@ -180,7 +180,7 @@ export default function Report() {
           ...detailVisitors.map((visitor) => [
             visitor.name,
             visitor.phone || "",
-            visitor.company || "",
+            visitor.purpose || visitor.company || "",
             visitor.breakfast || "",
             visitor.lunch || "",
             visitor.dinner || "",
@@ -207,7 +207,7 @@ export default function Report() {
           ...detailVisitors.map((visitor) => [
             visitor.name,
             visitor.phone || "",
-            visitor.company || "",
+            visitor.purpose || visitor.company || "",
             visitor[key] || "",
           ])
         );
@@ -506,7 +506,7 @@ export default function Report() {
                     <tr key={visitor.id}>
                       <td>{visitor.name}</td>
                       <td>{visitor.phone || ""}</td>
-                      <td>{visitor.company || ""}</td>
+                      <td>{visitor.purpose || visitor.company || ""}</td>
                       {detailView === "combined" ? (
                         <>
                           <td>{visitor.breakfast || ""}</td>

@@ -44,7 +44,7 @@ export default function Supervisor() {
   const [visitorQuery, setVisitorQuery] = useState("");
   const [visitorResults, setVisitorResults] = useState([]);
   const [selectedVisitors, setSelectedVisitors] = useState([]);
-  const [visitorForm, setVisitorForm] = useState({ name: "", phone: "", company: "" });
+  const [visitorForm, setVisitorForm] = useState({ name: "", phone: "", purpose: "" });
   const [visitorMeals, setVisitorMealsState] = useState({
     BREAKFAST: null,
     LUNCH: null,
@@ -52,6 +52,9 @@ export default function Supervisor() {
   });
   const [visitorSuccess, setVisitorSuccess] = useState("");
   const [employeeSearch, setEmployeeSearch] = useState("");
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickAddPrefix, setQuickAddPrefix] = useState("Visitor");
+  const [quickAddCount, setQuickAddCount] = useState(3);
   const sessionUser = getSession()?.user;
   const role = sessionUser?.role;
   const isHr = role === "HR_ADMIN" || role === "SUPER_ADMIN";
@@ -166,7 +169,7 @@ export default function Supervisor() {
     setVisitorQuery("");
     setVisitorResults([]);
     setSelectedVisitors([]);
-    setVisitorForm({ name: "", phone: "", company: "" });
+    setVisitorForm({ name: "", phone: "", purpose: "" });
     setVisitorMealsState({
       BREAKFAST: null,
       LUNCH: null,
@@ -209,14 +212,7 @@ export default function Supervisor() {
     [employeeId, users]
   );
 
-  const displayEmployees = useMemo(() => {
-    if (!selectedEmployee) return filteredEmployees;
-    const exists = filteredEmployees.some((user) => user.employeeId === selectedEmployee.employeeId);
-    if (exists) return filteredEmployees;
-    return [selectedEmployee, ...filteredEmployees];
-  }, [filteredEmployees, selectedEmployee]);
-
-  const shownCount = displayEmployees.length;
+  const shownCount = filteredEmployees.length;
   const totalCount = users.length;
 
   const addSelectedVisitor = (visitor) => {
@@ -234,12 +230,32 @@ export default function Supervisor() {
     setSelectedVisitors([]);
   };
 
+  const toggleSelectedVisitor = (visitor) => {
+    setSelectedVisitors((current) => {
+      if (current.some((item) => item.id === visitor.id)) {
+        return current.filter((item) => item.id !== visitor.id);
+      }
+      return [...current, visitor];
+    });
+  };
+
+  const isVisitorSelected = (visitorId) =>
+    selectedVisitors.some((visitor) => visitor.id === visitorId);
+
+  const getVisitorPurpose = (visitor) => visitor.purpose || visitor.company || "";
+
   const visitorName = visitorForm.name.trim();
   const visitorPhone = visitorForm.phone.trim();
   const visitorPhoneDigits = visitorPhone.replace(/\s+/g, "");
   const visitorPhoneValid = /^\d+$/.test(visitorPhoneDigits) && visitorPhoneDigits.length === 10;
   const visitorNameValid = visitorName.length > 0;
   const visitorFormValid = visitorNameValid && visitorPhoneValid;
+  const safeQuickAddCount = Number.isFinite(quickAddCount) ? quickAddCount : 1;
+
+  const generatePhone = () => {
+    const tail = String(Date.now() + Math.floor(Math.random() * 1_000_000)).slice(-9);
+    return `9${tail}`;
+  };
 
   useEffect(() => {
     if (!isAdminScopeRole) return;
@@ -395,9 +411,7 @@ export default function Supervisor() {
   };
 
   const handleSelectVisitor = (visitor) => {
-    addSelectedVisitor(visitor);
-    setVisitorQuery("");
-    setVisitorResults([]);
+    toggleSelectedVisitor(visitor);
   };
 
   const handleCreateVisitor = async () => {
@@ -418,6 +432,50 @@ export default function Supervisor() {
       setVisitorSuccess("Visitor saved");
     } catch (err) {
       setError(err.message || "Failed to create visitor");
+    }
+  };
+
+  const handleQuickAddVisitors = async () => {
+    setMessage("");
+    setError("");
+    const count = Number(safeQuickAddCount) || 0;
+    if (count < 1) {
+      setError("Enter a valid visitor count.");
+      return;
+    }
+    const created = [];
+    let failures = 0;
+    for (let index = 1; index <= Math.min(count, 50); index += 1) {
+      let attempts = 0;
+      let done = false;
+      while (attempts < 5 && !done) {
+        attempts += 1;
+        const phone = generatePhone();
+        try {
+          const visitor = await createVisitor({
+            name: `${quickAddPrefix.trim() || "Visitor"} #${index}`,
+            phone,
+            purpose: visitorForm.purpose?.trim() || undefined,
+          });
+          created.push(visitor);
+          done = true;
+        } catch (err) {
+          const message = (err?.message || "").toLowerCase();
+          if (message.includes("phone") || message.includes("exists") || message.includes("duplicate")) {
+            continue;
+          }
+          failures += 1;
+          done = true;
+        }
+      }
+      if (!done) failures += 1;
+    }
+    created.forEach((visitor) => addSelectedVisitor(visitor));
+    if (created.length) {
+      setMessage(`Created and selected ${created.length} visitor${created.length === 1 ? "" : "s"}.`);
+    }
+    if (failures) {
+      setError(`${created.length} succeeded, ${failures} failed.`);
     }
   };
 
@@ -515,28 +573,46 @@ export default function Supervisor() {
                 <div className="muted">Showing {shownCount} of {totalCount} employees</div>
               </div>
             </div>
-            <div className="field">
-              <label htmlFor="employee">Employee</label>
-              <select
-                id="employee"
-                value={employeeId}
-                onChange={(event) => setEmployeeId(event.target.value)}
-              >
-                {displayEmployees.map((user, index) => {
-                  const isSelected = user.employeeId === employeeId;
-                  const isOnlySelected =
-                    index === 0 &&
-                    isSelected &&
-                    !filteredEmployees.some((item) => item.employeeId === user.employeeId) &&
-                    employeeSearch.trim();
-                  const labelPrefix = isOnlySelected ? "Selected: " : "";
-                  return (
-                    <option key={user.employeeId} value={user.employeeId}>
-                      {labelPrefix}{user.name} ({user.employeeId})
-                    </option>
-                  );
-                })}
-              </select>
+            {selectedEmployee &&
+            employeeSearch.trim() &&
+            !filteredEmployees.some((user) => user.employeeId === selectedEmployee.employeeId) ? (
+              <div className="card compact">
+                <div className="row-title">Selected</div>
+                <div className="picker-item selected">
+                  <div>
+                    <div className="row-title">
+                      {selectedEmployee.name} ({selectedEmployee.employeeId})
+                    </div>
+                    {selectedEmployee.dept || selectedEmployee.site ? (
+                      <div className="row-status">
+                        {[selectedEmployee.dept, selectedEmployee.site].filter(Boolean).join(" · ")}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            <div className="picker-list">
+              {filteredEmployees.map((user) => (
+                <button
+                  key={user.employeeId}
+                  type="button"
+                  className={`picker-item ${user.employeeId === employeeId ? "selected" : ""}`}
+                  onClick={() => setEmployeeId(user.employeeId)}
+                >
+                  <div>
+                    <div className="row-title">
+                      {user.name} ({user.employeeId})
+                    </div>
+                    {user.dept || user.site ? (
+                      <div className="row-status">
+                        {[user.dept, user.site].filter(Boolean).join(" · ")}
+                      </div>
+                    ) : null}
+                  </div>
+                </button>
+              ))}
+              {!filteredEmployees.length ? <div className="muted">No employees found.</div> : null}
             </div>
           </>
         ) : null}
@@ -550,23 +626,26 @@ export default function Supervisor() {
                 onChange={(event) => setVisitorQuery(event.target.value)}
               />
             </div>
-            {visitorResults.length ? (
-              <div className="list">
-                {visitorResults.map((visitor) => (
-                  <div className="list-row" key={visitor.id}>
-                    <div>
-                      <div className="row-title">{visitor.name}</div>
-                      <div className="row-status">
-                        {visitor.phone || "No phone"} {visitor.company ? `· ${visitor.company}` : ""}
+            {visitorQuery.trim() && visitorResults.length ? (
+              <div className="picker-list">
+                {visitorResults.map((visitor) => {
+                  const checked = isVisitorSelected(visitor.id);
+                  return (
+                    <label className={`picker-item ${checked ? "selected" : ""}`} key={visitor.id}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => handleSelectVisitor(visitor)}
+                      />
+                      <div>
+                        <div className="row-title">{visitor.name}</div>
+                        <div className="row-status">
+                          {visitor.phone || "No phone"} {getVisitorPurpose(visitor) ? `· ${getVisitorPurpose(visitor)}` : ""}
+                        </div>
                       </div>
-                    </div>
-                    <div className="list-controls">
-                      <button className="button secondary" type="button" onClick={() => handleSelectVisitor(visitor)}>
-                        Select
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                    </label>
+                  );
+                })}
               </div>
             ) : null}
             <div className="card">
@@ -592,11 +671,11 @@ export default function Supervisor() {
                 ) : null}
               </div>
               <div className="field">
-                <label htmlFor="visitorCompany">Company</label>
+                <label htmlFor="visitorCompany">Purpose of visit</label>
                 <input
                   id="visitorCompany"
-                  value={visitorForm.company}
-                  onChange={(event) => setVisitorForm((prev) => ({ ...prev, company: event.target.value }))}
+                  value={visitorForm.purpose}
+                  onChange={(event) => setVisitorForm((prev) => ({ ...prev, purpose: event.target.value }))}
                 />
               </div>
               <button className="button" type="button" onClick={handleCreateVisitor} disabled={!visitorFormValid}>
@@ -604,6 +683,55 @@ export default function Supervisor() {
               </button>
               {visitorSuccess ? <div className="message success">{visitorSuccess}</div> : null}
             </div>
+            <details className="card" open={quickAddOpen} onToggle={(event) => setQuickAddOpen(event.target.open)}>
+              <summary>Quick add multiple visitors</summary>
+              <div className="field">
+                <label htmlFor="quickPrefix">Name prefix</label>
+                <input
+                  id="quickPrefix"
+                  value={quickAddPrefix}
+                  onChange={(event) => setQuickAddPrefix(event.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="quickPurpose">Purpose of visit</label>
+                <input
+                  id="quickPurpose"
+                  value={visitorForm.purpose}
+                  onChange={(event) => setVisitorForm((prev) => ({ ...prev, purpose: event.target.value }))}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="quickCount">Count</label>
+                <div className="list-controls">
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => setQuickAddCount((prev) => Math.max(1, prev - 1))}
+                  >
+                    -
+                  </button>
+                <input
+                  id="quickCount"
+                  type="number"
+                  min="1"
+                  max="50"
+                  value={Number.isFinite(quickAddCount) ? quickAddCount : ""}
+                  onChange={(event) => setQuickAddCount(Number(event.target.value))}
+                />
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => setQuickAddCount((prev) => Math.min(50, prev + 1))}
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <button className="button" type="button" onClick={handleQuickAddVisitors}>
+                Create & select {Math.min(50, Math.max(1, safeQuickAddCount))} visitors
+              </button>
+            </details>
             <div className="card">
               <div className="header">
                 <h3>Selected visitors</h3>
@@ -624,7 +752,9 @@ export default function Supervisor() {
                         <div className="row-title">
                           {visitor.name} {visitor.phone ? `(${visitor.phone})` : ""}
                         </div>
-                        {visitor.company ? <div className="row-status">{visitor.company}</div> : null}
+                        {getVisitorPurpose(visitor) ? (
+                          <div className="row-status">{getVisitorPurpose(visitor)}</div>
+                        ) : null}
                       </div>
                       <div className="list-controls">
                         <button
@@ -856,51 +986,107 @@ export default function Supervisor() {
           </div>
         ) : null}
         {mode !== "ground"
-          ? mealTypes.map((mealType) => (
-              <div className="row" key={mealType}>
-                <div className="row-left">
-                  <div className="row-title">{mealType}</div>
-                  {overrides[mealType] ? <div className="row-badge">Overridden by HR</div> : null}
-                </div>
-                <div className="button-group">
-                  <button
-                    className={`big-button yes ${
-                      mode === "visitor" && visitorMeals[mealType] === "YES" ? "btn-selected" : ""
-                    }`.trim()}
-                    onClick={() =>
-                      mode === "employee" ? handleChoice(mealType, true) : handleVisitorMeal(mealType, "YES")
-                    }
-                    disabled={mode === "employee" ? !employeeId : !selectedVisitors.length}
-                  >
-                    YES
-                  </button>
-                  <button
-                    className={`big-button no ${
-                      mode === "visitor" && visitorMeals[mealType] === "NO" ? "btn-selected" : ""
-                    }`.trim()}
-                    onClick={() =>
-                      mode === "employee" ? handleChoice(mealType, false) : handleVisitorMeal(mealType, "NO")
-                    }
-                    disabled={mode === "employee" ? !employeeId : !selectedVisitors.length}
-                  >
-                    NO
-                  </button>
-                  {mode === "visitor" ? (
-                    <button
-                      className="button secondary"
-                      type="button"
-                      onClick={() => handleVisitorMeal(mealType, null)}
-                      disabled={!selectedVisitors.length}
-                    >
-                      Clear
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ))
+          ? (
+              <>
+                {mode === "visitor" ? (
+                  <div className="row">
+                    <div className="row-left">
+                      <div className="row-title">All meals</div>
+                    </div>
+                    <div className="button-group">
+                      <button
+                        className="big-button yes"
+                        type="button"
+                        onClick={() => {
+                          setVisitorMealsState({
+                            BREAKFAST: "YES",
+                            LUNCH: "YES",
+                            DINNER: "YES",
+                          });
+                        }}
+                        disabled={!selectedVisitors.length}
+                      >
+                        YES
+                      </button>
+                      <button
+                        className="big-button no"
+                        type="button"
+                        onClick={() => {
+                          setVisitorMealsState({
+                            BREAKFAST: "NO",
+                            LUNCH: "NO",
+                            DINNER: "NO",
+                          });
+                        }}
+                        disabled={!selectedVisitors.length}
+                      >
+                        NO
+                      </button>
+                      <button
+                        className="button secondary"
+                        type="button"
+                        onClick={() => {
+                          setVisitorMealsState({
+                            BREAKFAST: null,
+                            LUNCH: null,
+                            DINNER: null,
+                          });
+                        }}
+                        disabled={!selectedVisitors.length}
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {mealTypes.map((mealType) => (
+                  <div className="row" key={mealType}>
+                    <div className="row-left">
+                      <div className="row-title">{mealType}</div>
+                      {overrides[mealType] ? <div className="row-badge">Overridden by HR</div> : null}
+                    </div>
+                    <div className="button-group">
+                      <button
+                        className={`big-button yes ${
+                          mode === "visitor" && visitorMeals[mealType] === "YES" ? "btn-selected" : ""
+                        }`.trim()}
+                        onClick={() =>
+                          mode === "employee" ? handleChoice(mealType, true) : handleVisitorMeal(mealType, "YES")
+                        }
+                        disabled={mode === "employee" ? !employeeId : !selectedVisitors.length}
+                      >
+                        YES
+                      </button>
+                      <button
+                        className={`big-button no ${
+                          mode === "visitor" && visitorMeals[mealType] === "NO" ? "btn-selected" : ""
+                        }`.trim()}
+                        onClick={() =>
+                          mode === "employee" ? handleChoice(mealType, false) : handleVisitorMeal(mealType, "NO")
+                        }
+                        disabled={mode === "employee" ? !employeeId : !selectedVisitors.length}
+                      >
+                        NO
+                      </button>
+                      {mode === "visitor" ? (
+                        <button
+                          className="button secondary"
+                          type="button"
+                          onClick={() => handleVisitorMeal(mealType, null)}
+                          disabled={!selectedVisitors.length}
+                        >
+                          Clear
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </>
+            )
           : null}
         {mode === "visitor" ? (
           <>
+            <div className="muted">Selected: {selectedVisitors.length} visitors</div>
             <button
               className="button"
               type="button"

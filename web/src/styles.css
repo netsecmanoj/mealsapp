@@ -432,6 +432,47 @@ a {
   gap: 12px;
 }
 
+.picker-list {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.picker-item input {
+  margin: 0;
+}
+
+.picker-item.selected {
+  border-color: var(--accent);
+  background: #f0fbf4;
+}
+
+.picker-item:hover {
+  border-color: var(--text);
+}
+
+.card.compact {
+  padding: 12px;
+}
+
 .list-row {
   display: flex;
   flex-wrap: wrap;

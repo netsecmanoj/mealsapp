@@ -190,7 +190,7 @@ model Visitor {
   id          String   @id @default(cuid())
   name        String
   phone       String?  @unique
-  company     String?
+  purpose     String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   createdById String?

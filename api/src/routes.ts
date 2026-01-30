@@ -1480,10 +1480,10 @@ router.get(
         ],
       },
       orderBy: { name: "asc" },
-      select: { id: true, name: true, phone: true, company: true },
+      select: { id: true, name: true, phone: true, purpose: true },
       take: 10,
     });
-    return res.json(visitors);
+    return res.json(visitors.map((visitor) => ({ ...visitor, company: visitor.purpose })));
   }
 );
 
@@ -1495,30 +1495,32 @@ router.post(
     const schema = z.object({
       name: z.string().trim().min(1),
       phone: z.string().trim().optional(),
+      purpose: z.string().trim().optional(),
       company: z.string().trim().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
     }
-    const { name, phone, company } = parsed.data;
+    const { name, phone, purpose, company } = parsed.data;
+    const resolvedPurpose = purpose ?? company ?? null;
     if (phone) {
       const existing = await prisma.visitor.findFirst({
         where: { phone },
-        select: { id: true, name: true, phone: true, company: true },
+        select: { id: true, name: true, phone: true, purpose: true },
       });
       if (existing) {
-        return res.json(existing);
+        return res.json({ ...existing, company: existing.purpose });
       }
     }
     const visitor = await prisma.visitor.create({
       data: {
         name,
         phone: phone || null,
-        company: company || null,
+        purpose: resolvedPurpose,
         createdById: req.user.id,
       },
-      select: { id: true, name: true, phone: true, company: true },
+      select: { id: true, name: true, phone: true, purpose: true },
     });
     await logAudit({
       actorId: req.user.id,
@@ -1527,7 +1529,7 @@ router.post(
       entityId: visitor.id,
       after: visitor,
     });
-    return res.json(visitor);
+    return res.json({ ...visitor, company: visitor.purpose });
   }
 );
 
@@ -3477,7 +3479,7 @@ router.get(
         where: { date: dateValue },
       }),
       prisma.visitor.findMany({
-        select: { id: true, name: true, phone: true, company: true },
+        select: { id: true, name: true, phone: true, purpose: true },
       }),
     ]);
 
@@ -3564,7 +3566,7 @@ router.get(
                     id: visitor.id,
                     name: visitor.name,
                     phone: visitor.phone,
-                    company: visitor.company,
+                    purpose: visitor.purpose,
                     breakfast: null,
                     lunch: null,
                     dinner: null,
@@ -3583,7 +3585,7 @@ router.get(
                   id: string;
                   name: string;
                   phone: string | null;
-                  company: string | null;
+                  purpose: string | null;
                   breakfast: string | null;
                   lunch: string | null;
                   dinner: string | null;
@@ -3593,6 +3595,7 @@ router.get(
             .values()
         ).map((item) => ({
           ...item,
+          company: item.purpose,
           breakfast: item.breakfast ?? "NOT_SET",
           lunch: item.lunch ?? "NOT_SET",
           dinner: item.dinner ?? "NOT_SET",
