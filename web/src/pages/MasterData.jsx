@@ -40,9 +40,17 @@ export default function MasterData() {
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [saveErrorDetails, setSaveErrorDetails] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const missingDepartments = saveErrorDetails?.missingDepartments || [];
+  const missingSites = saveErrorDetails?.missingSites || [];
+  const hasMissing = missingDepartments.length > 0 || missingSites.length > 0;
 
   const load = async () => {
     setError("");
+    setSaveErrorDetails(null);
+    setIsLoading(true);
     try {
       const data = await adminGetMasterData();
       setDepartments(data?.departments || []);
@@ -50,6 +58,8 @@ export default function MasterData() {
       setUsage(data?.usage || { departments: {}, sites: {} });
     } catch (err) {
       setError(err.message || "Failed to load master data");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -69,6 +79,8 @@ export default function MasterData() {
 
   const addDepartment = () => {
     setMessage("");
+    setError("");
+    setSaveErrorDetails(null);
     if (deptWarning) {
       setError(deptWarning);
       return;
@@ -80,6 +92,8 @@ export default function MasterData() {
 
   const addSite = () => {
     setMessage("");
+    setError("");
+    setSaveErrorDetails(null);
     if (siteWarning) {
       setError(siteWarning);
       return;
@@ -90,11 +104,15 @@ export default function MasterData() {
   };
 
   const removeDepartment = (value) => {
+    setError("");
+    setSaveErrorDetails(null);
     const next = normalizeList(departments.filter((item) => item !== value));
     setDepartments(next);
   };
 
   const removeSite = (value) => {
+    setError("");
+    setSaveErrorDetails(null);
     const next = normalizeList(sites.filter((item) => item !== value));
     setSites(next);
   };
@@ -102,6 +120,7 @@ export default function MasterData() {
   const handleSave = async () => {
     setMessage("");
     setError("");
+    setSaveErrorDetails(null);
     if (!reason.trim()) {
       setError("Reason is required");
       return;
@@ -117,10 +136,27 @@ export default function MasterData() {
       load();
     } catch (err) {
       setError(err.message || "Failed to update master data");
+      const details = err?.details || null;
+      if (
+        details &&
+        (Array.isArray(details.missingDepartments) || Array.isArray(details.missingSites))
+      ) {
+        setSaveErrorDetails({
+          missingDepartments: Array.isArray(details.missingDepartments) ? details.missingDepartments : [],
+          missingSites: Array.isArray(details.missingSites) ? details.missingSites : [],
+        });
+      }
     }
   };
 
   const isUnassigned = (value) => value.trim().toLowerCase() === UNASSIGNED_LABEL.toLowerCase();
+  const syncRequiredValues = () => {
+    setDepartments((current) => normalizeList([...current, ...missingDepartments]));
+    setSites((current) => normalizeList([...current, ...missingSites]));
+    setSaveErrorDetails(null);
+    setError("");
+    setMessage("Required values added. Review and save again.");
+  };
 
   return (
     <div className="app">
@@ -129,6 +165,7 @@ export default function MasterData() {
         <p className="muted">
           Manage departments and sites used in user dropdowns. Removing values in use is blocked.
         </p>
+        {isLoading ? <div className="message">Loading latest master data...</div> : null}
       </div>
 
       <div className="card">
@@ -139,9 +176,10 @@ export default function MasterData() {
             value={deptInput}
             onChange={(event) => setDeptInput(event.target.value)}
             placeholder="e.g. IT"
+            disabled={isLoading}
           />
         </div>
-        <button className="button" onClick={addDepartment}>
+        <button className="button" onClick={addDepartment} disabled={isLoading}>
           Add Department
         </button>
         {deptWarning ? <div className="message error">{deptWarning}</div> : null}
@@ -160,7 +198,7 @@ export default function MasterData() {
                   <button
                     className="button secondary"
                     onClick={() => removeDepartment(dept)}
-                    disabled={disabled || unassigned}
+                    disabled={disabled || unassigned || isLoading}
                   >
                     Remove
                   </button>
@@ -184,9 +222,10 @@ export default function MasterData() {
             value={siteInput}
             onChange={(event) => setSiteInput(event.target.value)}
             placeholder="e.g. HO-Bangalore"
+            disabled={isLoading}
           />
         </div>
-        <button className="button" onClick={addSite}>
+        <button className="button" onClick={addSite} disabled={isLoading}>
           Add Site
         </button>
         {siteWarning ? <div className="message error">{siteWarning}</div> : null}
@@ -205,7 +244,7 @@ export default function MasterData() {
                   <button
                     className="button secondary"
                     onClick={() => removeSite(site)}
-                    disabled={disabled || unassigned}
+                    disabled={disabled || unassigned || isLoading}
                   >
                     Remove
                   </button>
@@ -229,13 +268,31 @@ export default function MasterData() {
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             placeholder="Required for audit log"
+            disabled={isLoading}
           />
         </div>
-        <button className="button" onClick={handleSave}>
+        <button className="button" onClick={handleSave} disabled={isLoading}>
           Save Master Data
         </button>
         {message ? <div className="message success">{message}</div> : null}
-        {error ? <div className="message error">{error}</div> : null}
+        {error ? (
+          <div className="message error">
+            <div>{error}</div>
+            {hasMissing ? (
+              <div>
+                {missingDepartments.length > 0 ? (
+                  <div>Missing departments: {missingDepartments.join(", ")}</div>
+                ) : null}
+                {missingSites.length > 0 ? (
+                  <div>Missing sites: {missingSites.join(", ")}</div>
+                ) : null}
+                <button className="button secondary" onClick={syncRequiredValues}>
+                  Sync required values
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );
