@@ -43,13 +43,15 @@ export default function Supervisor() {
   const [overrides, setOverrides] = useState({});
   const [visitorQuery, setVisitorQuery] = useState("");
   const [visitorResults, setVisitorResults] = useState([]);
-  const [selectedVisitor, setSelectedVisitor] = useState(null);
+  const [selectedVisitors, setSelectedVisitors] = useState([]);
   const [visitorForm, setVisitorForm] = useState({ name: "", phone: "", company: "" });
   const [visitorMeals, setVisitorMealsState] = useState({
     BREAKFAST: null,
     LUNCH: null,
     DINNER: null,
   });
+  const [visitorSuccess, setVisitorSuccess] = useState("");
+  const [employeeSearch, setEmployeeSearch] = useState("");
   const sessionUser = getSession()?.user;
   const role = sessionUser?.role;
   const isHr = role === "HR_ADMIN" || role === "SUPER_ADMIN";
@@ -140,8 +142,13 @@ export default function Supervisor() {
   }, [visitorQuery, mode]);
 
   useEffect(() => {
-    if (mode !== "visitor" || !selectedVisitor?.id) return;
-    getVisitorMeals(selectedVisitor.id, date)
+    if (mode !== "visitor") return;
+    if (selectedVisitors.length !== 1) {
+      setVisitorMealsState({ BREAKFAST: null, LUNCH: null, DINNER: null });
+      return;
+    }
+    const visitor = selectedVisitors[0];
+    getVisitorMeals(visitor.id, date)
       .then((data) => {
         setVisitorMealsState({
           BREAKFAST: data?.breakfast ?? null,
@@ -152,19 +159,20 @@ export default function Supervisor() {
       .catch((err) => {
         setError(err.message || "Failed to load visitor meals");
       });
-  }, [mode, selectedVisitor, date]);
+  }, [mode, selectedVisitors, date]);
 
   useEffect(() => {
     if (mode === "visitor") return;
     setVisitorQuery("");
     setVisitorResults([]);
-    setSelectedVisitor(null);
+    setSelectedVisitors([]);
     setVisitorForm({ name: "", phone: "", company: "" });
     setVisitorMealsState({
       BREAKFAST: null,
       LUNCH: null,
       DINNER: null,
     });
+    setVisitorSuccess("");
   }, [mode]);
 
   useEffect(() => {
@@ -179,6 +187,59 @@ export default function Supervisor() {
     if (!showMembers) return;
     setCopyStatus("");
   }, [showMembers]);
+
+  useEffect(() => {
+    if (!visitorSuccess) return;
+    const timer = setTimeout(() => setVisitorSuccess(""), 3000);
+    return () => clearTimeout(timer);
+  }, [visitorSuccess]);
+
+  const filteredEmployees = useMemo(() => {
+    const query = employeeSearch.trim().toLowerCase();
+    if (!query) return users;
+    return users.filter(
+      (user) =>
+        user.name?.toLowerCase().includes(query) ||
+        user.employeeId?.toLowerCase().includes(query)
+    );
+  }, [employeeSearch, users]);
+
+  const selectedEmployee = useMemo(
+    () => users.find((user) => user.employeeId === employeeId) || null,
+    [employeeId, users]
+  );
+
+  const displayEmployees = useMemo(() => {
+    if (!selectedEmployee) return filteredEmployees;
+    const exists = filteredEmployees.some((user) => user.employeeId === selectedEmployee.employeeId);
+    if (exists) return filteredEmployees;
+    return [selectedEmployee, ...filteredEmployees];
+  }, [filteredEmployees, selectedEmployee]);
+
+  const shownCount = displayEmployees.length;
+  const totalCount = users.length;
+
+  const addSelectedVisitor = (visitor) => {
+    setSelectedVisitors((current) => {
+      if (current.some((item) => item.id === visitor.id)) return current;
+      return [...current, visitor];
+    });
+  };
+
+  const removeSelectedVisitor = (visitorId) => {
+    setSelectedVisitors((current) => current.filter((visitor) => visitor.id !== visitorId));
+  };
+
+  const clearSelectedVisitors = () => {
+    setSelectedVisitors([]);
+  };
+
+  const visitorName = visitorForm.name.trim();
+  const visitorPhone = visitorForm.phone.trim();
+  const visitorPhoneDigits = visitorPhone.replace(/\s+/g, "");
+  const visitorPhoneValid = /^\d+$/.test(visitorPhoneDigits) && visitorPhoneDigits.length === 10;
+  const visitorNameValid = visitorName.length > 0;
+  const visitorFormValid = visitorNameValid && visitorPhoneValid;
 
   useEffect(() => {
     if (!isAdminScopeRole) return;
@@ -334,20 +395,27 @@ export default function Supervisor() {
   };
 
   const handleSelectVisitor = (visitor) => {
-    setSelectedVisitor(visitor);
-    setVisitorQuery(visitor.name);
+    addSelectedVisitor(visitor);
+    setVisitorQuery("");
     setVisitorResults([]);
   };
 
   const handleCreateVisitor = async () => {
     setMessage("");
     setError("");
+    if (!visitorFormValid) {
+      setError("Enter a valid name and 10-digit phone.");
+      return;
+    }
     try {
-      const created = await createVisitor(visitorForm);
-      setSelectedVisitor(created);
-      setVisitorQuery(created.name);
+      const created = await createVisitor({
+        ...visitorForm,
+        phone: visitorPhoneDigits,
+      });
+      addSelectedVisitor(created);
+      setVisitorQuery("");
       setVisitorResults([]);
-      setMessage("Visitor saved");
+      setVisitorSuccess("Visitor saved");
     } catch (err) {
       setError(err.message || "Failed to create visitor");
     }
@@ -358,21 +426,41 @@ export default function Supervisor() {
   };
 
   const handleSaveVisitorMeals = async () => {
-    if (!selectedVisitor?.id) {
-      setError("Select a visitor first");
+    if (!selectedVisitors.length) {
+      setError("Select at least one visitor");
       return;
     }
     setMessage("");
     setError("");
     try {
-      await setVisitorMeals(selectedVisitor.id, {
-        date,
-        breakfast: visitorMeals.BREAKFAST,
-        lunch: visitorMeals.LUNCH,
-        dinner: visitorMeals.DINNER,
-        overrideReason: reason || undefined,
-      });
-      setMessage("Visitor meals saved");
+      let successCount = 0;
+      let failureCount = 0;
+      let firstError = "";
+      for (const visitor of selectedVisitors) {
+        try {
+          await setVisitorMeals(visitor.id, {
+            date,
+            breakfast: visitorMeals.BREAKFAST,
+            lunch: visitorMeals.LUNCH,
+            dinner: visitorMeals.DINNER,
+            overrideReason: reason || undefined,
+          });
+          successCount += 1;
+        } catch (err) {
+          failureCount += 1;
+          if (!firstError) {
+            firstError = err?.message || "Failed to save some visitors";
+          }
+        }
+      }
+      if (successCount) {
+        setMessage(`Saved meals for ${successCount} visitor${successCount === 1 ? "" : "s"}.`);
+      }
+      if (failureCount) {
+        setError(
+          `${successCount} succeeded, ${failureCount} failed${firstError ? `: ${firstError}` : ""}`
+        );
+      }
     } catch (err) {
       setError(err.message || "Failed to save visitor meals");
     }
@@ -406,20 +494,51 @@ export default function Supervisor() {
           </button>
         </div>
         {mode === "employee" ? (
-          <div className="field">
-            <label htmlFor="employee">Employee</label>
-            <select
-              id="employee"
-              value={employeeId}
-              onChange={(event) => setEmployeeId(event.target.value)}
-            >
-              {users.map((user) => (
-                <option key={user.employeeId} value={user.employeeId}>
-                  {user.name} ({user.employeeId})
-                </option>
-              ))}
-            </select>
-          </div>
+          <>
+            <div className="field">
+              <label htmlFor="employeeSearch">Search employee</label>
+              <input
+                id="employeeSearch"
+                value={employeeSearch}
+                onChange={(event) => setEmployeeSearch(event.target.value)}
+                placeholder="Type name or employee ID"
+              />
+              <div className="list-controls">
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={() => setEmployeeSearch("")}
+                  disabled={!employeeSearch}
+                >
+                  Clear
+                </button>
+                <div className="muted">Showing {shownCount} of {totalCount} employees</div>
+              </div>
+            </div>
+            <div className="field">
+              <label htmlFor="employee">Employee</label>
+              <select
+                id="employee"
+                value={employeeId}
+                onChange={(event) => setEmployeeId(event.target.value)}
+              >
+                {displayEmployees.map((user, index) => {
+                  const isSelected = user.employeeId === employeeId;
+                  const isOnlySelected =
+                    index === 0 &&
+                    isSelected &&
+                    !filteredEmployees.some((item) => item.employeeId === user.employeeId) &&
+                    employeeSearch.trim();
+                  const labelPrefix = isOnlySelected ? "Selected: " : "";
+                  return (
+                    <option key={user.employeeId} value={user.employeeId}>
+                      {labelPrefix}{user.name} ({user.employeeId})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          </>
         ) : null}
         {mode === "visitor" ? (
           <>
@@ -459,6 +578,7 @@ export default function Supervisor() {
                   value={visitorForm.name}
                   onChange={(event) => setVisitorForm((prev) => ({ ...prev, name: event.target.value }))}
                 />
+                {!visitorNameValid ? <div className="muted">Name is required.</div> : null}
               </div>
               <div className="field">
                 <label htmlFor="visitorPhone">Phone</label>
@@ -467,6 +587,9 @@ export default function Supervisor() {
                   value={visitorForm.phone}
                   onChange={(event) => setVisitorForm((prev) => ({ ...prev, phone: event.target.value }))}
                 />
+                {!visitorPhoneValid ? (
+                  <div className="muted">Enter a valid 10-digit phone number.</div>
+                ) : null}
               </div>
               <div className="field">
                 <label htmlFor="visitorCompany">Company</label>
@@ -476,17 +599,49 @@ export default function Supervisor() {
                   onChange={(event) => setVisitorForm((prev) => ({ ...prev, company: event.target.value }))}
                 />
               </div>
-              <button className="button" type="button" onClick={handleCreateVisitor}>
+              <button className="button" type="button" onClick={handleCreateVisitor} disabled={!visitorFormValid}>
                 Save visitor
               </button>
+              {visitorSuccess ? <div className="message success">{visitorSuccess}</div> : null}
             </div>
-            {selectedVisitor ? (
-              <div className="card">
-                <div className="row-title">
-                  Selected visitor: {selectedVisitor.name} {selectedVisitor.phone ? `(${selectedVisitor.phone})` : ""}
-                </div>
+            <div className="card">
+              <div className="header">
+                <h3>Selected visitors</h3>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={clearSelectedVisitors}
+                  disabled={!selectedVisitors.length}
+                >
+                  Clear all
+                </button>
               </div>
-            ) : null}
+              {selectedVisitors.length ? (
+                <div className="list">
+                  {selectedVisitors.map((visitor) => (
+                    <div className="list-row" key={visitor.id}>
+                      <div>
+                        <div className="row-title">
+                          {visitor.name} {visitor.phone ? `(${visitor.phone})` : ""}
+                        </div>
+                        {visitor.company ? <div className="row-status">{visitor.company}</div> : null}
+                      </div>
+                      <div className="list-controls">
+                        <button
+                          className="button secondary"
+                          type="button"
+                          onClick={() => removeSelectedVisitor(visitor.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="muted">No visitors selected.</div>
+              )}
+            </div>
           </>
         ) : null}
         {mode === "ground" ? (
@@ -715,7 +870,7 @@ export default function Supervisor() {
                     onClick={() =>
                       mode === "employee" ? handleChoice(mealType, true) : handleVisitorMeal(mealType, "YES")
                     }
-                    disabled={mode === "employee" ? !employeeId : !selectedVisitor}
+                    disabled={mode === "employee" ? !employeeId : !selectedVisitors.length}
                   >
                     YES
                   </button>
@@ -726,7 +881,7 @@ export default function Supervisor() {
                     onClick={() =>
                       mode === "employee" ? handleChoice(mealType, false) : handleVisitorMeal(mealType, "NO")
                     }
-                    disabled={mode === "employee" ? !employeeId : !selectedVisitor}
+                    disabled={mode === "employee" ? !employeeId : !selectedVisitors.length}
                   >
                     NO
                   </button>
@@ -735,7 +890,7 @@ export default function Supervisor() {
                       className="button secondary"
                       type="button"
                       onClick={() => handleVisitorMeal(mealType, null)}
-                      disabled={!selectedVisitor}
+                      disabled={!selectedVisitors.length}
                     >
                       Clear
                     </button>
@@ -745,9 +900,18 @@ export default function Supervisor() {
             ))
           : null}
         {mode === "visitor" ? (
-          <button className="button" type="button" onClick={handleSaveVisitorMeals} disabled={!selectedVisitor}>
-            Save visitor meals
-          </button>
+          <>
+            <button
+              className="button"
+              type="button"
+              onClick={handleSaveVisitorMeals}
+              disabled={!selectedVisitors.length}
+            >
+              Save meals for {selectedVisitors.length} visitor
+              {selectedVisitors.length === 1 ? "" : "s"}
+            </button>
+            {!selectedVisitors.length ? <div className="muted">Select at least one visitor.</div> : null}
+          </>
         ) : null}
         {mode === "ground" ? (
           <button
