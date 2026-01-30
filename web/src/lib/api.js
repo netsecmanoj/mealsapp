@@ -335,6 +335,13 @@ export async function setStaffChoice(employeeId, date, mealType, wantMeal, reaso
   });
 }
 
+export async function setGroundStaffBulk(payload) {
+  return apiFetch("/api/supervisor/ground-staff/bulk", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getDailyReport(date) {
   const params = new URLSearchParams({ date });
   return apiFetch(`/api/reports/daily?${params.toString()}`, {

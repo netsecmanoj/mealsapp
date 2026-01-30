@@ -6,6 +6,7 @@ import {
   listUsers,
   searchVisitors,
   setStaffChoice,
+  setGroundStaffBulk,
   setVisitorMeals,
 } from "../lib/api.js";
 import { todayStr } from "../lib/date.js";
@@ -17,6 +18,11 @@ export default function Supervisor() {
   const [users, setUsers] = useState([]);
   const [employeeId, setEmployeeId] = useState("");
   const [date, setDate] = useState(todayStr());
+  const [bulkUseRange, setBulkUseRange] = useState(false);
+  const [bulkFrom, setBulkFrom] = useState(todayStr());
+  const [bulkTo, setBulkTo] = useState(todayStr());
+  const [bulkMeals, setBulkMeals] = useState([...mealTypes]);
+  const [bulkWantMeal, setBulkWantMeal] = useState("YES");
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -32,6 +38,7 @@ export default function Supervisor() {
   });
   const role = getSession()?.user?.role;
   const isHr = role === "HR_ADMIN" || role === "SUPER_ADMIN";
+  const groundStaffCount = users.filter((user) => user.role === "GROUND_STAFF").length;
 
   useEffect(() => {
     let active = true;
@@ -108,6 +115,37 @@ export default function Supervisor() {
     }
   };
 
+  const toggleBulkMeal = (mealType) => {
+    setBulkMeals((prev) =>
+      prev.includes(mealType) ? prev.filter((item) => item !== mealType) : [...prev, mealType]
+    );
+  };
+
+  const handleBulkSubmit = async () => {
+    setMessage("");
+    setError("");
+    if (!bulkMeals.length) {
+      setError("Select at least one meal");
+      return;
+    }
+    const from = bulkUseRange ? bulkFrom : date;
+    const to = bulkUseRange ? bulkTo : date;
+    try {
+      const result = await setGroundStaffBulk({
+        from,
+        to,
+        meals: bulkMeals,
+        wantMeal: bulkWantMeal === "YES",
+        overrideReason: reason || undefined,
+      });
+      setMessage(
+        `Bulk update saved for ${result?.affectedUsers ?? 0} ground staff`
+      );
+    } catch (err) {
+      setError(err.message || "Failed");
+    }
+  };
+
   const handleSelectVisitor = (visitor) => {
     setSelectedVisitor(visitor);
     setVisitorQuery(visitor.name);
@@ -171,6 +209,13 @@ export default function Supervisor() {
             type="button"
           >
             Visitor
+          </button>
+          <button
+            className={`pill ${mode === "ground" ? "active" : ""}`}
+            onClick={() => setMode("ground")}
+            type="button"
+          >
+            Ground Staff Group
           </button>
         </div>
         {mode === "employee" ? (
@@ -256,15 +301,97 @@ export default function Supervisor() {
             ) : null}
           </>
         )}
-        <div className="field">
-          <label htmlFor="date">Date</label>
-          <input
-            id="date"
-            type="date"
-            value={date}
-            onChange={(event) => setDate(event.target.value)}
-          />
-        </div>
+        {mode === "ground" ? (
+          <>
+            <div className="field">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={bulkUseRange}
+                  onChange={(event) => setBulkUseRange(event.target.checked)}
+                />{" "}
+                Use date range
+              </label>
+            </div>
+            {bulkUseRange ? (
+              <div className="row">
+                <div className="field">
+                  <label htmlFor="from">From</label>
+                  <input
+                    id="from"
+                    type="date"
+                    value={bulkFrom}
+                    onChange={(event) => setBulkFrom(event.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="to">To</label>
+                  <input
+                    id="to"
+                    type="date"
+                    value={bulkTo}
+                    onChange={(event) => setBulkTo(event.target.value)}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="field">
+                <label htmlFor="date">Date</label>
+                <input
+                  id="date"
+                  type="date"
+                  value={date}
+                  onChange={(event) => setDate(event.target.value)}
+                />
+              </div>
+            )}
+            <div className="field">
+              <label>Meals</label>
+              <div className="pill-row">
+                {mealTypes.map((mealType) => (
+                  <button
+                    key={mealType}
+                    type="button"
+                    className={`pill ${bulkMeals.includes(mealType) ? "active" : ""}`}
+                    onClick={() => toggleBulkMeal(mealType)}
+                  >
+                    {mealType}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="field">
+              <label>Apply selection</label>
+              <div className="button-group">
+                <button
+                  type="button"
+                  className={`big-button yes ${bulkWantMeal === "YES" ? "btn-selected" : ""}`.trim()}
+                  onClick={() => setBulkWantMeal("YES")}
+                >
+                  YES
+                </button>
+                <button
+                  type="button"
+                  className={`big-button no ${bulkWantMeal === "NO" ? "btn-selected" : ""}`.trim()}
+                  onClick={() => setBulkWantMeal("NO")}
+                >
+                  NO
+                </button>
+              </div>
+            </div>
+            <div className="row-status">This will apply to {groundStaffCount} ground staff</div>
+          </>
+        ) : (
+          <div className="field">
+            <label htmlFor="date">Date</label>
+            <input
+              id="date"
+              type="date"
+              value={date}
+              onChange={(event) => setDate(event.target.value)}
+            />
+          </div>
+        )}
         {isHr ? (
           <div className="field">
             <label htmlFor="reason">Override reason (required after cutoff)</label>
@@ -275,47 +402,58 @@ export default function Supervisor() {
             />
           </div>
         ) : null}
-        {mealTypes.map((mealType) => (
-          <div className="row" key={mealType}>
-            <div className="row-left">
-              <div className="row-title">{mealType}</div>
-              {overrides[mealType] ? <div className="row-badge">Overridden by HR</div> : null}
-            </div>
-            <div className="button-group">
-              <button
-                className={`big-button yes ${
-                  mode === "visitor" && visitorMeals[mealType] === "YES" ? "btn-selected" : ""
-                }`.trim()}
-                onClick={() => (mode === "employee" ? handleChoice(mealType, true) : handleVisitorMeal(mealType, "YES"))}
-                disabled={mode === "employee" ? !employeeId : !selectedVisitor}
-              >
-                YES
-              </button>
-              <button
-                className={`big-button no ${
-                  mode === "visitor" && visitorMeals[mealType] === "NO" ? "btn-selected" : ""
-                }`.trim()}
-                onClick={() => (mode === "employee" ? handleChoice(mealType, false) : handleVisitorMeal(mealType, "NO"))}
-                disabled={mode === "employee" ? !employeeId : !selectedVisitor}
-              >
-                NO
-              </button>
-              {mode === "visitor" ? (
-                <button
-                  className="button secondary"
-                  type="button"
-                  onClick={() => handleVisitorMeal(mealType, null)}
-                  disabled={!selectedVisitor}
-                >
-                  Clear
-                </button>
-              ) : null}
-            </div>
-          </div>
-        ))}
+        {mode !== "ground"
+          ? mealTypes.map((mealType) => (
+              <div className="row" key={mealType}>
+                <div className="row-left">
+                  <div className="row-title">{mealType}</div>
+                  {overrides[mealType] ? <div className="row-badge">Overridden by HR</div> : null}
+                </div>
+                <div className="button-group">
+                  <button
+                    className={`big-button yes ${
+                      mode === "visitor" && visitorMeals[mealType] === "YES" ? "btn-selected" : ""
+                    }`.trim()}
+                    onClick={() =>
+                      mode === "employee" ? handleChoice(mealType, true) : handleVisitorMeal(mealType, "YES")
+                    }
+                    disabled={mode === "employee" ? !employeeId : !selectedVisitor}
+                  >
+                    YES
+                  </button>
+                  <button
+                    className={`big-button no ${
+                      mode === "visitor" && visitorMeals[mealType] === "NO" ? "btn-selected" : ""
+                    }`.trim()}
+                    onClick={() =>
+                      mode === "employee" ? handleChoice(mealType, false) : handleVisitorMeal(mealType, "NO")
+                    }
+                    disabled={mode === "employee" ? !employeeId : !selectedVisitor}
+                  >
+                    NO
+                  </button>
+                  {mode === "visitor" ? (
+                    <button
+                      className="button secondary"
+                      type="button"
+                      onClick={() => handleVisitorMeal(mealType, null)}
+                      disabled={!selectedVisitor}
+                    >
+                      Clear
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ))
+          : null}
         {mode === "visitor" ? (
           <button className="button" type="button" onClick={handleSaveVisitorMeals} disabled={!selectedVisitor}>
             Save visitor meals
+          </button>
+        ) : null}
+        {mode === "ground" ? (
+          <button className="button" type="button" onClick={handleBulkSubmit} disabled={!groundStaffCount}>
+            Apply to ground staff
           </button>
         ) : null}
       </div>
