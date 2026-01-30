@@ -1869,6 +1869,165 @@ router.get(
   }
 );
 
+router.get(
+  "/admin/visitors",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (req, res) => {
+    const from = firstString(req.query.from)?.trim();
+    const to = firstString(req.query.to)?.trim();
+    const status = firstString(req.query.status)?.trim() || "unused";
+    const q = firstString(req.query.q)?.trim();
+    const limitRaw = Number(firstString(req.query.limit) ?? 200);
+    const limit = Number.isFinite(limitRaw) ? Math.min(500, Math.max(1, Math.floor(limitRaw))) : 200;
+
+    if (!from || !dateOnlySchema.safeParse(from).success) {
+      return res.status(400).json({ error: "Invalid from date" });
+    }
+    if (!to || !dateOnlySchema.safeParse(to).success) {
+      return res.status(400).json({ error: "Invalid to date" });
+    }
+    if (!["unused", "used", "all"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status" });
+    }
+
+    const settings = await getSettingsSnapshot();
+    const timezone = settings?.timezone || getDefaultSettings().timezone;
+    const endExclusive = addDaysToDateString(to, 1);
+    const createdAt = {
+      gte: zonedTimeToUtc(from, "00:00", timezone),
+      lt: zonedTimeToUtc(endExclusive, "00:00", timezone),
+    };
+
+    const where: any = { createdAt };
+    if (status === "unused") {
+      where.meals = { none: {} };
+    } else if (status === "used") {
+      where.meals = { some: {} };
+    }
+    if (q) {
+      where.OR = [
+        { name: { contains: q, mode: "insensitive" } },
+        { phone: { contains: q, mode: "insensitive" } },
+        { purpose: { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const [total, items] = await Promise.all([
+      prisma.visitor.count({ where }),
+      prisma.visitor.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          purpose: true,
+          createdAt: true,
+          createdById: true,
+          createdBy: { select: { employeeId: true, name: true, role: true } },
+          _count: { select: { meals: true } },
+        },
+      }),
+    ]);
+
+    return res.json({
+      total,
+      items: items.map((visitor) => ({
+        id: visitor.id,
+        name: visitor.name,
+        phone: visitor.phone,
+        purpose: visitor.purpose,
+        company: visitor.purpose,
+        createdAt: visitor.createdAt,
+        createdById: visitor.createdById,
+        createdBy: visitor.createdBy,
+        mealsCount: visitor._count.meals,
+        mealsSaved: visitor._count.meals > 0,
+      })),
+    });
+  }
+);
+
+router.delete(
+  "/admin/visitors",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (req, res) => {
+    const schema = z.object({
+      ids: z.array(z.string().trim().min(1)).min(1),
+      mode: z.enum(["unusedOnly", "force"]).optional(),
+      reason: z.string().trim().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success || !req.user) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+    const { ids, mode = "unusedOnly", reason } = parsed.data;
+    if (mode === "force" && !reason?.trim()) {
+      return res.status(400).json({ error: "REASON_REQUIRED" });
+    }
+
+    const visitors = await prisma.visitor.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        purpose: true,
+        createdAt: true,
+        createdById: true,
+        _count: { select: { meals: true } },
+      },
+    });
+
+    const deleted: Array<{ id: string; name: string }> = [];
+    const skipped: Array<{ id: string; name: string; reason: string }> = [];
+    const deletable = visitors.filter((visitor) => {
+      if (mode === "force") return true;
+      if (visitor._count.meals > 0) {
+        skipped.push({ id: visitor.id, name: visitor.name, reason: "HAS_MEALS" });
+        return false;
+      }
+      return true;
+    });
+
+    const idsToDelete = deletable.map((visitor) => visitor.id);
+    if (idsToDelete.length) {
+      await prisma.$transaction(async (tx) => {
+        if (mode === "force") {
+          await tx.visitorMealChoice.deleteMany({ where: { visitorId: { in: idsToDelete } } });
+        }
+        await tx.visitor.deleteMany({ where: { id: { in: idsToDelete } } });
+      });
+
+      for (const visitor of deletable) {
+        deleted.push({ id: visitor.id, name: visitor.name });
+        await logAudit({
+          actorId: req.user.id,
+          action: "DELETE_VISITOR",
+          entity: "Visitor",
+          entityId: visitor.id,
+          reason: reason?.trim() || "cleanup",
+          before: {
+            id: visitor.id,
+            name: visitor.name,
+            phone: visitor.phone,
+            purpose: visitor.purpose,
+            mealsCount: visitor._count.meals,
+            createdAt: visitor.createdAt,
+            createdById: visitor.createdById,
+          },
+          after: null,
+        });
+      }
+    }
+
+    return res.json({ ok: true, deleted, skipped });
+  }
+);
+
 router.post(
   "/admin/users",
   authMiddleware,

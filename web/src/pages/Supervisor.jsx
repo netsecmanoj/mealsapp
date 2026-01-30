@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   adminGetMasterData,
   adminListUsers,
+  adminListVisitors,
+  adminDeleteVisitors,
   createVisitor,
   getSession,
   getVisitorMeals,
@@ -55,6 +57,25 @@ export default function Supervisor() {
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickAddPrefix, setQuickAddPrefix] = useState("Visitor");
   const [quickAddCount, setQuickAddCount] = useState(3);
+  const [cleanupFrom, setCleanupFrom] = useState(() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 7);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  });
+  const [cleanupTo, setCleanupTo] = useState(todayStr());
+  const [cleanupStatus, setCleanupStatus] = useState("unused");
+  const [cleanupQuery, setCleanupQuery] = useState("");
+  const [cleanupLimit, setCleanupLimit] = useState(500);
+  const [cleanupItems, setCleanupItems] = useState([]);
+  const [cleanupTotal, setCleanupTotal] = useState(0);
+  const [cleanupSelectedIds, setCleanupSelectedIds] = useState([]);
+  const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [cleanupMessage, setCleanupMessage] = useState("");
+  const [cleanupError, setCleanupError] = useState("");
+  const [cleanupSkipped, setCleanupSkipped] = useState([]);
   const sessionUser = getSession()?.user;
   const role = sessionUser?.role;
   const isHr = role === "HR_ADMIN" || role === "SUPER_ADMIN";
@@ -243,6 +264,33 @@ export default function Supervisor() {
     selectedVisitors.some((visitor) => visitor.id === visitorId);
 
   const getVisitorPurpose = (visitor) => visitor.purpose || visitor.company || "";
+
+  const cleanupSelectedSet = useMemo(
+    () => new Set(cleanupSelectedIds),
+    [cleanupSelectedIds]
+  );
+
+  const toggleCleanupSelection = (id) => {
+    setCleanupSelectedIds((current) => {
+      if (current.includes(id)) {
+        return current.filter((item) => item !== id);
+      }
+      return [...current, id];
+    });
+  };
+
+  const clearCleanupSelection = () => {
+    setCleanupSelectedIds([]);
+  };
+
+  const formatCreatedAt = (value) => {
+    if (!value) return "";
+    try {
+      return new Date(value).toLocaleString();
+    } catch {
+      return String(value);
+    }
+  };
 
   const visitorName = visitorForm.name.trim();
   const visitorPhone = visitorForm.phone.trim();
@@ -524,6 +572,81 @@ export default function Supervisor() {
     }
   };
 
+  const loadCleanupVisitors = async () => {
+    setCleanupLoading(true);
+    setCleanupMessage("");
+    setCleanupError("");
+    setCleanupSkipped([]);
+    try {
+      const data = await adminListVisitors({
+        from: cleanupFrom,
+        to: cleanupTo,
+        status: cleanupStatus,
+        q: cleanupQuery,
+        limit: cleanupLimit,
+      });
+      setCleanupItems(data?.items || []);
+      setCleanupTotal(typeof data?.total === "number" ? data.total : (data?.items || []).length);
+      setCleanupSelectedIds([]);
+    } catch (err) {
+      setCleanupError(err.message || "Failed to load visitors");
+    } finally {
+      setCleanupLoading(false);
+    }
+  };
+
+  const handleDeleteSelectedVisitors = async () => {
+    if (!cleanupSelectedIds.length) return;
+    setCleanupMessage("");
+    setCleanupError("");
+    setCleanupSkipped([]);
+    try {
+      const result = await adminDeleteVisitors({
+        ids: cleanupSelectedIds,
+        mode: "unusedOnly",
+        reason: "cleanup",
+      });
+      setCleanupMessage(`Deleted ${result?.deleted?.length || 0}, skipped ${result?.skipped?.length || 0}`);
+      setCleanupSkipped(result?.skipped || []);
+      await loadCleanupVisitors();
+    } catch (err) {
+      setCleanupError(err.message || "Failed to delete visitors");
+    }
+  };
+
+  const handleDeleteAllUnused = async () => {
+    setCleanupMessage("");
+    setCleanupError("");
+    setCleanupSkipped([]);
+    if (cleanupStatus !== "unused") {
+      setCleanupError("Set status to Unused to delete all in range.");
+      return;
+    }
+    const warning =
+      cleanupItems.length < cleanupTotal
+        ? " Only loaded items will be deleted. Increase limit or narrow date range to delete all."
+        : "";
+    const confirmText = `Delete all UNUSED visitors created between ${cleanupFrom} and ${cleanupTo}? This cannot be undone.${warning}`;
+    if (!window.confirm(confirmText)) return;
+    const ids = cleanupItems.filter((item) => !item.mealsSaved).map((item) => item.id);
+    if (!ids.length) {
+      setCleanupMessage("No unused visitors found in this range.");
+      return;
+    }
+    try {
+      const result = await adminDeleteVisitors({
+        ids,
+        mode: "unusedOnly",
+        reason: "cleanup",
+      });
+      setCleanupMessage(`Deleted ${result?.deleted?.length || 0}, skipped ${result?.skipped?.length || 0}`);
+      setCleanupSkipped(result?.skipped || []);
+      await loadCleanupVisitors();
+    } catch (err) {
+      setCleanupError(err.message || "Failed to delete visitors");
+    }
+  };
+
   return (
     <div className="app">
       <div className="card">
@@ -772,6 +895,129 @@ export default function Supervisor() {
                 <div className="muted">No visitors selected.</div>
               )}
             </div>
+            {isHr ? (
+              <details className="card">
+                <summary>Cleanup visitors (Admin)</summary>
+                <div className="field">
+                  <label htmlFor="cleanupFrom">Created from</label>
+                  <input
+                    id="cleanupFrom"
+                    type="date"
+                    value={cleanupFrom}
+                    onChange={(event) => setCleanupFrom(event.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="cleanupTo">Created to</label>
+                  <input
+                    id="cleanupTo"
+                    type="date"
+                    value={cleanupTo}
+                    onChange={(event) => setCleanupTo(event.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="cleanupStatus">Status</label>
+                  <select
+                    id="cleanupStatus"
+                    value={cleanupStatus}
+                    onChange={(event) => setCleanupStatus(event.target.value)}
+                  >
+                    <option value="unused">Unused</option>
+                    <option value="used">Used</option>
+                    <option value="all">All</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="cleanupQuery">Search</label>
+                  <input
+                    id="cleanupQuery"
+                    value={cleanupQuery}
+                    onChange={(event) => setCleanupQuery(event.target.value)}
+                    placeholder="Search name / phone / purpose"
+                  />
+                </div>
+                <div className="list-controls">
+                  <button className="button" type="button" onClick={loadCleanupVisitors} disabled={cleanupLoading}>
+                    {cleanupLoading ? "Loading..." : "Load"}
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={clearCleanupSelection}
+                    disabled={!cleanupSelectedIds.length}
+                  >
+                    Clear selection
+                  </button>
+                  <div className="muted">
+                    Showing {cleanupItems.length} of {cleanupTotal} visitors (status={cleanupStatus}, limit={cleanupLimit})
+                  </div>
+                  {cleanupItems.length < cleanupTotal ? (
+                    <div className="muted">
+                      Only loaded items will be deleted by “Delete ALL unused in range”.
+                    </div>
+                  ) : null}
+                </div>
+                {cleanupItems.length ? (
+                  <div className="list">
+                    {cleanupItems.map((visitor) => (
+                      <div className="list-row" key={visitor.id}>
+                        <div className="list-controls">
+                          <input
+                            type="checkbox"
+                            checked={cleanupSelectedSet.has(visitor.id)}
+                            onChange={() => toggleCleanupSelection(visitor.id)}
+                          />
+                        </div>
+                        <div className="list-main">
+                          <div className="row-title">{visitor.name}</div>
+                          <div className="row-status">
+                            {visitor.phone || "No phone"} {getVisitorPurpose(visitor) ? `· ${getVisitorPurpose(visitor)}` : ""}
+                          </div>
+                          <div className="row-status">
+                            Created: {formatCreatedAt(visitor.createdAt)}
+                          </div>
+                          <div className="row-status">
+                            Meals saved: {visitor.mealsSaved ? "Yes" : "No"}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="muted">No visitors loaded.</div>
+                )}
+                <div className="list-controls">
+                  <button
+                    className="button"
+                    type="button"
+                    onClick={handleDeleteSelectedVisitors}
+                    disabled={!cleanupSelectedIds.length}
+                  >
+                    Delete selected (unused only)
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={handleDeleteAllUnused}
+                    disabled={cleanupStatus !== "unused" || !cleanupItems.length}
+                  >
+                    Delete ALL unused in range
+                  </button>
+                </div>
+                {cleanupMessage ? <div className="message success">{cleanupMessage}</div> : null}
+                {cleanupError ? <div className="message error">{cleanupError}</div> : null}
+                {cleanupSkipped.length ? (
+                  <div className="message warning">
+                    {cleanupSkipped.map((item) => (
+                      <div key={item.id}>
+                        {item.name} skipped: {item.reason}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </details>
+            ) : null}
           </>
         ) : null}
         {mode === "ground" ? (

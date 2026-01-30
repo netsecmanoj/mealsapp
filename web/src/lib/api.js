@@ -216,6 +216,24 @@ export async function adminUpdateMasterData(payload) {
   });
 }
 
+export async function adminListVisitors(params = {}) {
+  const searchParams = new URLSearchParams();
+  if (params.from) searchParams.set("from", params.from);
+  if (params.to) searchParams.set("to", params.to);
+  if (params.status) searchParams.set("status", params.status);
+  if (params.q) searchParams.set("q", params.q);
+  if (params.limit) searchParams.set("limit", String(params.limit));
+  const suffix = searchParams.toString();
+  return apiFetch(`/api/admin/visitors${suffix ? `?${suffix}` : ""}`, { method: "GET" });
+}
+
+export async function adminDeleteVisitors(payload) {
+  return apiFetch("/api/admin/visitors", {
+    method: "DELETE",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function adminCreateUser(payload) {
   return apiFetch("/api/admin/users", {
     method: "POST",
