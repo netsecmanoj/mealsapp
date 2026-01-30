@@ -1691,6 +1691,12 @@ router.put(
       if (data.role !== undefined && !allowedRoles.has(data.role)) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
       }
+      if (
+        data.active === false &&
+        (existing.role === Role.HR_ADMIN || existing.role === Role.SUPER_ADMIN)
+      ) {
+        return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
+      }
     }
     if (req.user.role === Role.HR_ADMIN) {
       if (existing.role === Role.SUPER_ADMIN) {
@@ -1698,6 +1704,9 @@ router.put(
       }
       if (data.role === Role.SUPER_ADMIN) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
+      }
+      if (data.active === false && existing.role === Role.SUPER_ADMIN) {
+        return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
       }
     }
     const masterData = await getMasterDataSnapshot();
@@ -1829,11 +1838,41 @@ router.post(
       if (invalid) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
       }
+      const employeeIds = Array.from(
+        new Set(parsed.data.users.map((item) => item.employeeId).filter(Boolean))
+      );
+      if (employeeIds.length) {
+        const protectedUsers = await prisma.user.findMany({
+          where: {
+            employeeId: { in: employeeIds },
+            role: { in: [Role.HR_ADMIN, Role.SUPER_ADMIN] },
+          },
+          select: { employeeId: true },
+        });
+        if (protectedUsers.length) {
+          return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
+        }
+      }
     }
     if (req.user.role === Role.HR_ADMIN) {
       const invalid = parsed.data.users.find((item) => item.role === Role.SUPER_ADMIN);
       if (invalid) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
+      }
+      const employeeIds = Array.from(
+        new Set(parsed.data.users.map((item) => item.employeeId).filter(Boolean))
+      );
+      if (employeeIds.length) {
+        const protectedUsers = await prisma.user.findMany({
+          where: {
+            employeeId: { in: employeeIds },
+            role: Role.SUPER_ADMIN,
+          },
+          select: { employeeId: true },
+        });
+        if (protectedUsers.length) {
+          return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
+        }
       }
     }
     const masterData = await getMasterDataSnapshot();
@@ -2628,7 +2667,21 @@ router.put(
       return res.status(400).json({ error: "Invalid payload" });
     }
 
+    const masterBefore = await getMasterDataSnapshot();
+    const attemptPayload = {
+      departments: parsed.data.departments,
+      sites: parsed.data.sites,
+    };
+
     if (!hasUnassigned(parsed.data.departments)) {
+      await logAudit({
+        actorId: req.user.id,
+        action: "UPDATE_MASTER_DATA",
+        entity: "AppSetting",
+        reason: parsed.data.reason,
+        before: masterBefore,
+        after: { ...attemptPayload, blocked: true, error: "CANNOT_REMOVE_UNASSIGNED" },
+      });
       return res.status(409).json({
         error: "CANNOT_REMOVE_UNASSIGNED",
         field: "departments",
@@ -2636,6 +2689,14 @@ router.put(
       });
     }
     if (!hasUnassigned(parsed.data.sites)) {
+      await logAudit({
+        actorId: req.user.id,
+        action: "UPDATE_MASTER_DATA",
+        entity: "AppSetting",
+        reason: parsed.data.reason,
+        before: masterBefore,
+        after: { ...attemptPayload, blocked: true, error: "CANNOT_REMOVE_UNASSIGNED" },
+      });
       return res.status(409).json({
         error: "CANNOT_REMOVE_UNASSIGNED",
         field: "sites",
@@ -2667,8 +2728,22 @@ router.put(
     });
 
     if (missingDepartments.length || missingSites.length) {
+      await logAudit({
+        actorId: req.user.id,
+        action: "UPDATE_MASTER_DATA",
+        entity: "AppSetting",
+        reason: parsed.data.reason,
+        before: masterBefore,
+        after: {
+          ...attemptPayload,
+          blocked: true,
+          error: "CANNOT_REMOVE_IN_USE",
+          missingDepartments,
+          missingSites,
+        },
+      });
       return res.status(409).json({
-        error: "MASTER_DATA_IN_USE",
+        error: "CANNOT_REMOVE_IN_USE",
         missingDepartments,
         missingSites,
       });

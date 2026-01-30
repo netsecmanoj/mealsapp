@@ -166,6 +166,8 @@ export default function MasterData() {
                   </button>
                   {unassigned ? (
                     <span className="muted">Unassigned cannot be removed</span>
+                  ) : disabled ? (
+                    <span className="muted">In use</span>
                   ) : null}
                 </div>
               </div>
@@ -209,6 +211,8 @@ export default function MasterData() {
                   </button>
                   {unassigned ? (
                     <span className="muted">Unassigned cannot be removed</span>
+                  ) : disabled ? (
+                    <span className="muted">In use</span>
                   ) : null}
                 </div>
               </div>

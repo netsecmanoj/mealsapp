@@ -12,6 +12,7 @@
     "prisma:migrate": "prisma migrate dev",
     "seed": "tsx src/seed.ts",
     "seed:prod": "node dist/seed.js",
+    "sanitize:audit": "tsx src/scripts/sanitizeAuditLogs.ts",
     "test": "tsx src/__tests__/cutoff.test.ts"
   },
   "keywords": [],
