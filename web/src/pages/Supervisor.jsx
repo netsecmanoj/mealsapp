@@ -1,5 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  adminGetMasterData,
+  adminListUsers,
   createVisitor,
   getSession,
   getVisitorMeals,
@@ -12,10 +14,12 @@ import {
 import { todayStr } from "../lib/date.js";
 
 const mealTypes = ["BREAKFAST", "LUNCH", "DINNER"];
+const UNASSIGNED_LABEL = "Unassigned";
 
 export default function Supervisor() {
   const [mode, setMode] = useState("employee");
   const [users, setUsers] = useState([]);
+  const [adminUsers, setAdminUsers] = useState([]);
   const [employeeId, setEmployeeId] = useState("");
   const [date, setDate] = useState(todayStr());
   const [bulkUseRange, setBulkUseRange] = useState(false);
@@ -23,6 +27,9 @@ export default function Supervisor() {
   const [bulkTo, setBulkTo] = useState(todayStr());
   const [bulkMeals, setBulkMeals] = useState([...mealTypes]);
   const [bulkWantMeal, setBulkWantMeal] = useState("YES");
+  const [scopeSite, setScopeSite] = useState("");
+  const [scopeSupervisor, setScopeSupervisor] = useState("");
+  const [siteOptions, setSiteOptions] = useState([]);
   const [reason, setReason] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -36,9 +43,15 @@ export default function Supervisor() {
     LUNCH: null,
     DINNER: null,
   });
-  const role = getSession()?.user?.role;
+  const sessionUser = getSession()?.user;
+  const role = sessionUser?.role;
   const isHr = role === "HR_ADMIN" || role === "SUPER_ADMIN";
-  const groundStaffCount = users.filter((user) => user.role === "GROUND_STAFF").length;
+  const isSupervisorRole = role === "SUPERVISOR";
+  const isAdminScopeRole = role === "HR_ADMIN" || role === "SUPER_ADMIN";
+  const currentSite = sessionUser?.site || "";
+  const currentEmployeeId = sessionUser?.employeeId || "";
+  const currentName = sessionUser?.name || "";
+  const isUnassignedValue = (value) => value?.trim().toLowerCase() === UNASSIGNED_LABEL.toLowerCase();
 
   useEffect(() => {
     let active = true;
@@ -59,6 +72,41 @@ export default function Supervisor() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAdminScopeRole) return;
+    let active = true;
+    adminListUsers()
+      .then((data) => {
+        if (!active) return;
+        setAdminUsers(data || []);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setError(err.message || "Failed to load users");
+      });
+    return () => {
+      active = false;
+    };
+  }, [isAdminScopeRole]);
+
+  useEffect(() => {
+    if (!isAdminScopeRole) return;
+    let active = true;
+    adminGetMasterData()
+      .then((data) => {
+        if (!active) return;
+        const sites = (data?.sites || []).filter((site) => !isUnassignedValue(site));
+        setSiteOptions(sites);
+      })
+      .catch(() => {
+        if (!active) return;
+        setSiteOptions([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isAdminScopeRole]);
 
   useEffect(() => {
     if (mode !== "visitor") return;
@@ -112,6 +160,53 @@ export default function Supervisor() {
     });
   }, [mode]);
 
+  useEffect(() => {
+    if (!isAdminScopeRole) return;
+    setScopeSupervisor("");
+  }, [scopeSite, isAdminScopeRole]);
+
+  const availableSites = useMemo(() => {
+    if (siteOptions.length) return siteOptions;
+    const set = new Set();
+    for (const user of adminUsers) {
+      if (!user.site || isUnassignedValue(user.site)) continue;
+      set.add(user.site);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [adminUsers, siteOptions]);
+
+  useEffect(() => {
+    if (!isAdminScopeRole) return;
+    if (scopeSite && !availableSites.includes(scopeSite)) {
+      setScopeSite("");
+    }
+  }, [availableSites, isAdminScopeRole, scopeSite]);
+
+  const supervisorOptions = useMemo(() => {
+    if (!isAdminScopeRole || !scopeSite) return [];
+    return adminUsers
+      .filter((user) => user.role === "SUPERVISOR" && user.active && user.site === scopeSite)
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }, [adminUsers, isAdminScopeRole, scopeSite]);
+
+  const groundStaffCount = useMemo(() => {
+    if (mode !== "ground") return 0;
+    if (isSupervisorRole) {
+      return users.filter((user) => user.role === "GROUND_STAFF").length;
+    }
+    if (isAdminScopeRole) {
+      if (!scopeSite || isUnassignedValue(scopeSite)) return 0;
+      let list = adminUsers.filter(
+        (user) => user.role === "GROUND_STAFF" && user.active && user.site === scopeSite
+      );
+      if (scopeSupervisor) {
+        list = list.filter((user) => user.supervisorEmployeeId === scopeSupervisor);
+      }
+      return list.length;
+    }
+    return users.filter((user) => user.role === "GROUND_STAFF").length;
+  }, [adminUsers, isAdminScopeRole, isSupervisorRole, mode, scopeSite, scopeSupervisor, users]);
+
   const handleChoice = async (mealType, wantMeal) => {
     setMessage("");
     setError("");
@@ -141,18 +236,40 @@ export default function Supervisor() {
       setError("Select at least one meal");
       return;
     }
+    if (isSupervisorRole && (!currentSite || isUnassignedValue(currentSite))) {
+      setError("Your site is unassigned. Bulk apply is disabled.");
+      return;
+    }
+    if (isAdminScopeRole) {
+      if (!scopeSite || isUnassignedValue(scopeSite)) {
+        setError("Select a site to continue.");
+        return;
+      }
+    }
     const from = bulkUseRange ? bulkFrom : date;
     const to = bulkUseRange ? bulkTo : date;
     try {
-      const result = await setGroundStaffBulk({
+      const payload = {
         from,
         to,
         meals: bulkMeals,
         wantMeal: bulkWantMeal === "YES",
         overrideReason: reason || undefined,
-      });
+      };
+      if (isAdminScopeRole) {
+        payload.site = scopeSite;
+        if (scopeSupervisor) {
+          payload.supervisorEmployeeId = scopeSupervisor;
+        }
+      }
+      const result = await setGroundStaffBulk(payload);
+      const scopeLabel = result?.scope?.site
+        ? ` (Site: ${result.scope.site}${
+            result.scope.supervisorEmployeeId ? `, Supervisor: ${result.scope.supervisorEmployeeId}` : ""
+          })`
+        : "";
       setMessage(
-        `Bulk update saved for ${result?.affectedUsers ?? 0} ground staff`
+        `Bulk update saved for ${result?.affectedUsers ?? 0} ground staff${scopeLabel}`
       );
     } catch (err) {
       setError(err.message || "Failed");
@@ -317,6 +434,70 @@ export default function Supervisor() {
         ) : null}
         {mode === "ground" ? (
           <>
+            <div className="card">
+              <h3>Target Scope</h3>
+              {isSupervisorRole ? (
+                <>
+                  <div className="row-status">Target: Your assigned ground staff</div>
+                  <div className="row-status">Site: {currentSite || UNASSIGNED_LABEL}</div>
+                  <div className="row-status">
+                    Supervisor:{" "}
+                    {currentName
+                      ? `${currentName} (${currentEmployeeId || "Unknown"})`
+                      : currentEmployeeId || "Unknown"}
+                  </div>
+                  <div className="row-status">Count: {groundStaffCount}</div>
+                  {!currentSite || isUnassignedValue(currentSite) ? (
+                    <div className="message error">Your site is unassigned. Bulk apply is disabled.</div>
+                  ) : null}
+                </>
+              ) : isAdminScopeRole ? (
+                <>
+                  <div className="field">
+                    <label htmlFor="scopeSite">Site (required)</label>
+                    <select
+                      id="scopeSite"
+                      value={scopeSite}
+                      onChange={(event) => setScopeSite(event.target.value)}
+                    >
+                      <option value="">Select site</option>
+                      {availableSites.map((site) => (
+                        <option key={site} value={site}>
+                          {site}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label htmlFor="scopeSupervisor">Supervisor (optional)</label>
+                    <select
+                      id="scopeSupervisor"
+                      value={scopeSupervisor}
+                      onChange={(event) => setScopeSupervisor(event.target.value)}
+                      disabled={!scopeSite}
+                    >
+                      <option value="">All supervisors in this site</option>
+                      {supervisorOptions.map((supervisor) => (
+                        <option key={supervisor.employeeId} value={supervisor.employeeId}>
+                          {supervisor.name
+                            ? `${supervisor.name} (${supervisor.employeeId})`
+                            : supervisor.employeeId}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="row-status">
+                    Target:{" "}
+                    {scopeSite
+                      ? `Ground Staff in ${scopeSite}${
+                          scopeSupervisor ? ` (Supervisor: ${scopeSupervisor})` : " (All supervisors)"
+                        }`
+                      : "Select a site"}
+                  </div>
+                  <div className="row-status">Count: {scopeSite ? groundStaffCount : 0}</div>
+                </>
+              ) : null}
+            </div>
             <div className="field">
               <label>
                 <input
@@ -466,7 +647,14 @@ export default function Supervisor() {
           </button>
         ) : null}
         {mode === "ground" ? (
-          <button className="button" type="button" onClick={handleBulkSubmit} disabled={!groundStaffCount}>
+          <button
+            className="button"
+            type="button"
+            onClick={handleBulkSubmit}
+            disabled={
+              !groundStaffCount || (isAdminScopeRole && (!scopeSite || isUnassignedValue(scopeSite)))
+            }
+          >
             Apply to ground staff
           </button>
         ) : null}

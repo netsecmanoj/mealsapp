@@ -1222,12 +1222,14 @@ router.post(
       meals: z.array(z.nativeEnum(MealType)).min(1),
       wantMeal: z.boolean(),
       overrideReason: z.string().trim().optional(),
+      site: z.string().trim().optional(),
+      supervisorEmployeeId: z.string().trim().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
     }
-    const { from, to, meals, wantMeal, overrideReason } = parsed.data;
+    const { from, to, meals, wantMeal, overrideReason, site, supervisorEmployeeId } = parsed.data;
     const startDate = new Date(from);
     const endDate = new Date(to);
     if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate < startDate) {
@@ -1268,36 +1270,85 @@ router.post(
     }
 
     let targetUsers: Array<{ id: string; employeeId: string }> = [];
+    let scopeSite: string | null = null;
+    let scopeSupervisorEmployeeId: string | null = null;
     if (req.user.role === Role.SUPERVISOR) {
       if (!req.user.site || isUnassignedValue(req.user.site)) {
-        return res.json({ ok: true, affectedUsers: 0, dates: dates.length, meals: meals.length });
+        return res.status(400).json({ error: "SITE_REQUIRED" });
       }
+      scopeSite = req.user.site;
+      scopeSupervisorEmployeeId = req.user.employeeId ?? null;
       const assignments = await prisma.supervisorAssignment.findMany({
         where: { supervisorId: req.user.id },
         select: { employeeId: true },
       });
       const employeeIds = assignments.map((item) => item.employeeId);
       if (!employeeIds.length) {
-        return res.json({ ok: true, affectedUsers: 0, dates: dates.length, meals: meals.length });
+        return res.json({
+          ok: true,
+          affectedUsers: 0,
+          dates: dates.length,
+          meals: meals.length,
+          scope: { site: scopeSite, supervisorEmployeeId: scopeSupervisorEmployeeId },
+        });
       }
       targetUsers = await prisma.user.findMany({
         where: {
           id: { in: employeeIds },
           role: Role.GROUND_STAFF,
           active: true,
-          site: req.user.site,
+          site: scopeSite,
         },
         select: { id: true, employeeId: true },
       });
     } else {
+      if (!site || isUnassignedValue(site)) {
+        return res.status(400).json({ error: "SITE_REQUIRED" });
+      }
+      const masterData = await getMasterDataSnapshot();
+      const siteResolved = resolveMasterValue(site, masterData.sites);
+      if (siteResolved.error || isUnassignedValue(siteResolved.value)) {
+        return res.status(400).json({ error: "INVALID_SITE", allowed: masterData.sites });
+      }
+      scopeSite = siteResolved.value;
+      let scopedUserIds: string[] | null = null;
+      if (supervisorEmployeeId?.trim()) {
+        const supervisor = await prisma.user.findFirst({
+          where: { employeeId: supervisorEmployeeId.trim(), role: Role.SUPERVISOR, active: true },
+          select: { id: true, employeeId: true, site: true },
+        });
+        if (!supervisor) {
+          return res.status(404).json({ error: "Supervisor not found" });
+        }
+        if (!supervisor.site || isUnassignedValue(supervisor.site) || supervisor.site !== scopeSite) {
+          return res.status(400).json({ error: "SUPERVISOR_SITE_MISMATCH" });
+        }
+        scopeSupervisorEmployeeId = supervisor.employeeId;
+        const assignments = await prisma.supervisorAssignment.findMany({
+          where: { supervisorId: supervisor.id },
+          select: { employeeId: true },
+        });
+        scopedUserIds = assignments.map((item) => item.employeeId);
+      }
       targetUsers = await prisma.user.findMany({
-        where: { role: Role.GROUND_STAFF, active: true },
+        where: {
+          role: Role.GROUND_STAFF,
+          active: true,
+          site: scopeSite,
+          ...(scopedUserIds ? { id: { in: scopedUserIds } } : {}),
+        },
         select: { id: true, employeeId: true },
       });
     }
 
     if (!targetUsers.length) {
-      return res.json({ ok: true, affectedUsers: 0, dates: dates.length, meals: meals.length });
+      return res.json({
+        ok: true,
+        affectedUsers: 0,
+        dates: dates.length,
+        meals: meals.length,
+        scope: { site: scopeSite, supervisorEmployeeId: scopeSupervisorEmployeeId },
+      });
     }
 
     const source = req.user.role === Role.SUPERVISOR ? Source.SUPERVISOR : Source.ADMIN;
@@ -1348,10 +1399,17 @@ router.post(
         meals,
         wantMeal,
         affectedUsers: targetUsers.length,
+        scope: { site: scopeSite, supervisorEmployeeId: scopeSupervisorEmployeeId },
       },
     });
 
-    return res.json({ ok: true, affectedUsers: targetUsers.length, dates: dates.length, meals: meals.length });
+    return res.json({
+      ok: true,
+      affectedUsers: targetUsers.length,
+      dates: dates.length,
+      meals: meals.length,
+      scope: { site: scopeSite, supervisorEmployeeId: scopeSupervisorEmployeeId },
+    });
   }
 );
 
