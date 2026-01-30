@@ -19,3 +19,7 @@ api/prisma/dev.db-journal
 # Windows
 Thumbs.db
 Desktop.ini
+
+# Build artifacts
+api/dist/
+web/dist/
