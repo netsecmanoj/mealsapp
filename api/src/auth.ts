@@ -1,11 +1,8 @@
 import type { NextFunction, Request, Response } from "express";
+import type { Role } from "@prisma/client";
 import jwt from "jsonwebtoken";
-import prismaPkg from "@prisma/client";
 
-const { Role } = prismaPkg as unknown as {
-  Role: typeof import("@prisma/client").Role;
-};
-type RoleType = (typeof Role)[keyof typeof Role];
+export type RoleType = Role;
 
 export type AuthUser = {
   id: string;

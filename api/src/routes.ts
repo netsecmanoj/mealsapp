@@ -1605,7 +1605,7 @@ router.post(
     }
     const data = parsed.data;
     if (req.user.role === Role.ADMIN) {
-      const allowedRoles = new Set([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
+      const allowedRoles = new Set<RoleType>([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
       if (!allowedRoles.has(data.role)) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
       }
@@ -1684,18 +1684,12 @@ router.put(
     }
     const data = parsed.data;
     if (req.user.role === Role.ADMIN) {
-      const allowedRoles = new Set([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
+      const allowedRoles = new Set<RoleType>([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
       if (existing.role === Role.HR_ADMIN || existing.role === Role.SUPER_ADMIN) {
         return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
       }
       if (data.role !== undefined && !allowedRoles.has(data.role)) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
-      }
-      if (
-        data.active === false &&
-        (existing.role === Role.HR_ADMIN || existing.role === Role.SUPER_ADMIN)
-      ) {
-        return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
       }
     }
     if (req.user.role === Role.HR_ADMIN) {
@@ -1704,9 +1698,6 @@ router.put(
       }
       if (data.role === Role.SUPER_ADMIN) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
-      }
-      if (data.active === false && existing.role === Role.SUPER_ADMIN) {
-        return res.status(403).json({ error: "TARGET_ROLE_PROTECTED" });
       }
     }
     const masterData = await getMasterDataSnapshot();
@@ -1833,7 +1824,7 @@ router.post(
       return res.status(400).json({ error: "Invalid payload" });
     }
     if (req.user.role === Role.ADMIN) {
-      const allowedRoles = new Set([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
+      const allowedRoles = new Set<RoleType>([Role.EMPLOYEE, Role.SUPERVISOR, Role.GROUND_STAFF]);
       const invalid = parsed.data.users.find((item) => !allowedRoles.has(item.role));
       if (invalid) {
         return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
