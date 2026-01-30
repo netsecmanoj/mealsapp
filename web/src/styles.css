@@ -320,6 +320,10 @@ a {
   color: var(--danger);
 }
 
+.message.warning {
+  color: #b5651d;
+}
+
 .grid {
   display: grid;
   gap: 12px;

@@ -34,8 +34,12 @@ export default function Supervisor() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [bulkErrorDetails, setBulkErrorDetails] = useState(null);
+  const [bulkWarningDetails, setBulkWarningDetails] = useState(null);
   const [showMembers, setShowMembers] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
+  const [skipNotServed, setSkipNotServed] = useState(true);
+  const [skipAfterCutoff, setSkipAfterCutoff] = useState(true);
+  const [forceNotServed, setForceNotServed] = useState(false);
   const [overrides, setOverrides] = useState({});
   const [visitorQuery, setVisitorQuery] = useState("");
   const [visitorResults, setVisitorResults] = useState([]);
@@ -166,6 +170,7 @@ export default function Supervisor() {
   useEffect(() => {
     if (mode === "ground") return;
     setBulkErrorDetails(null);
+    setBulkWarningDetails(null);
     setShowMembers(false);
     setCopyStatus("");
   }, [mode]);
@@ -256,8 +261,17 @@ export default function Supervisor() {
     setMessage("");
     setError("");
     setBulkErrorDetails(null);
+    setBulkWarningDetails(null);
     if (!bulkMeals.length) {
       setError("Select at least one meal");
+      return;
+    }
+    if (forceNotServed && !reason.trim()) {
+      setError("Override reason required to force not served meals.");
+      return;
+    }
+    if (!skipAfterCutoff && !reason.trim()) {
+      setError("Override reason required to include days past cutoff.");
       return;
     }
     if (isSupervisorRole && (!currentSite || isUnassignedValue(currentSite))) {
@@ -280,6 +294,9 @@ export default function Supervisor() {
         meals: bulkMeals,
         wantMeal: bulkWantMeal === "YES",
         overrideReason: reason || undefined,
+        skipNotServed,
+        skipAfterCutoff,
+        forceNotServed,
       };
       if (isAdminScopeRole) {
         payload.site = scopeSite;
@@ -288,6 +305,12 @@ export default function Supervisor() {
         }
       }
       const result = await setGroundStaffBulk(payload);
+      if (result?.skipped?.blocked?.length || result?.skipped?.violations?.length) {
+        setBulkWarningDetails({
+          blocked: result.skipped.blocked || [],
+          violations: result.skipped.violations || [],
+        });
+      }
       const scopeLabel = result?.scope?.site
         ? ` (Site: ${result.scope.site}${
             result.scope.supervisorEmployeeId ? `, Supervisor: ${result.scope.supervisorEmployeeId}` : ""
@@ -298,11 +321,13 @@ export default function Supervisor() {
       );
     } catch (err) {
       setError(err.message || "Failed");
-      const details = err?.details;
-      if (details?.blocked || details?.violations) {
+      const details = err?.details?.details ?? err?.details;
+      const blocked = details?.blocked ?? details?.skipped?.blocked;
+      const violations = details?.violations ?? details?.skipped?.violations;
+      if (blocked || violations) {
         setBulkErrorDetails({
-          blocked: Array.isArray(details.blocked) ? details.blocked : [],
-          violations: Array.isArray(details.violations) ? details.violations : [],
+          blocked: Array.isArray(blocked) ? blocked : [],
+          violations: Array.isArray(violations) ? violations : [],
         });
       }
     }
@@ -622,6 +647,36 @@ export default function Supervisor() {
                 </button>
               </div>
             </div>
+            <div className="field checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={skipNotServed}
+                  onChange={(event) => setSkipNotServed(event.target.checked)}
+                />{" "}
+                Skip days where meal is not served
+              </label>
+            </div>
+            <div className="field checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={skipAfterCutoff}
+                  onChange={(event) => setSkipAfterCutoff(event.target.checked)}
+                />{" "}
+                Skip days where cutoff is passed
+              </label>
+            </div>
+            <div className="field checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={forceNotServed}
+                  onChange={(event) => setForceNotServed(event.target.checked)}
+                />{" "}
+                Force include days even if meal not served (requires override reason)
+              </label>
+            </div>
             <div className="row-status">This will apply to {groundStaffCount} ground staff</div>
           </>
         ) : (
@@ -708,6 +763,31 @@ export default function Supervisor() {
         ) : null}
       </div>
       {message ? <div className="message success">{message}</div> : null}
+      {bulkWarningDetails ? (
+        <div className="message warning">
+          <div>Some days were skipped.</div>
+          {bulkWarningDetails.blocked?.length ? (
+            <div>
+              {bulkWarningDetails.blocked.map((item, index) => (
+                <div key={`${item.date}-${item.mealType}-${index}`}>
+                  Meal not served: {item.date} ({item.mealType}){" "}
+                  {item.reason ? `- ${item.reason.replaceAll("_", " ").toLowerCase()}` : ""}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {bulkWarningDetails.violations?.length ? (
+            <div>
+              {bulkWarningDetails.violations.map((item, index) => (
+                <div key={`${item.date}-${item.mealType}-${index}`}>
+                  Cutoff passed: {item.date} ({item.mealType}) cutoff {item.cutoff}{" "}
+                  {item.timezone ? `(${item.timezone})` : ""}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {error ? (
         <div className="message error">
           <div>{error}</div>

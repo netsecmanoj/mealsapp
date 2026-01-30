@@ -85,7 +85,8 @@ async function apiFetch(path, options = {}) {
     }
     const error = new Error(message);
     if (details) {
-      error.details = details;
+      error.details = details.details ?? details;
+      error.status = response.status;
     }
     throw error;
   }

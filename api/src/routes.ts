@@ -1224,21 +1224,40 @@ router.post(
       overrideReason: z.string().trim().optional(),
       site: z.string().trim().optional(),
       supervisorEmployeeId: z.string().trim().optional(),
+      skipNotServed: z.boolean().optional(),
+      skipAfterCutoff: z.boolean().optional(),
+      forceNotServed: z.boolean().optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success || !req.user) {
       return res.status(400).json({ error: "Invalid payload" });
     }
-    const { from, to, meals, wantMeal, overrideReason, site, supervisorEmployeeId } = parsed.data;
+    const {
+      from,
+      to,
+      meals,
+      wantMeal,
+      overrideReason,
+      site,
+      supervisorEmployeeId,
+      skipNotServed,
+      skipAfterCutoff,
+      forceNotServed,
+    } = parsed.data;
     const startDate = new Date(from);
     const endDate = new Date(to);
     if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate < startDate) {
       return res.status(400).json({ error: "Invalid date range" });
     }
+    const skipNotServedFlag = skipNotServed !== undefined ? skipNotServed : true;
+    const skipAfterCutoffFlag = skipAfterCutoff !== undefined ? skipAfterCutoff : true;
+    const forceNotServedFlag = forceNotServed === true;
+    if (forceNotServedFlag && !overrideReason) {
+      return res.status(400).json({ error: "OVERRIDE_REASON_REQUIRED" });
+    }
 
     const settings = await getSettingsSnapshot();
     const timezone = settings?.timezone || getDefaultSettings().timezone;
-    const isHrOverride = req.user.role === Role.HR_ADMIN || req.user.role === Role.SUPER_ADMIN;
     const dates = getDateRange(from, to);
     if (!dates.length) {
       return res.status(400).json({ error: "Invalid date range" });
@@ -1247,6 +1266,7 @@ router.post(
     const now = new Date();
     const blocked: Array<{ date: string; mealType: MealTypeType; reason: "OFFICE_CLOSED" | "MEAL_DISABLED" }> = [];
     const violations: Array<{ date: string; mealType: MealTypeType; cutoff: string; timezone: string }> = [];
+    const allowedSlots: Array<{ date: string; mealType: MealTypeType }> = [];
     for (const date of dates) {
       if (isPastServiceDate(date, settings)) {
         return sendPastDate(res, { date, timezone });
@@ -1254,16 +1274,22 @@ router.post(
       const serviceDay = await getEffectiveServiceDay(date);
       for (const mealType of meals) {
         if (!isMealServed(serviceDay, mealType)) {
-          blocked.push({
-            date,
-            mealType,
-            reason: serviceDay.isOfficeOpen ? "MEAL_DISABLED" : "OFFICE_CLOSED",
-          });
+          if (forceNotServedFlag && overrideReason) {
+            allowedSlots.push({ date, mealType });
+          } else {
+            blocked.push({
+              date,
+              mealType,
+              reason: serviceDay.isOfficeOpen ? "MEAL_DISABLED" : "OFFICE_CLOSED",
+            });
+          }
           continue;
         }
         const cutoffDate = getCutoffDate(date, mealType, serviceDay, settings);
         if (now > cutoffDate) {
-          if (!isHrOverride || !overrideReason) {
+          if (overrideReason) {
+            allowedSlots.push({ date, mealType });
+          } else {
             violations.push({
               date,
               mealType,
@@ -1271,14 +1297,20 @@ router.post(
               timezone,
             });
           }
+          continue;
         }
+        allowedSlots.push({ date, mealType });
       }
     }
-    if (blocked.length) {
+    if (!skipNotServedFlag && blocked.length) {
       return res.status(400).json({ error: "MEAL_NOT_SERVED", details: { blocked } });
     }
-    if (violations.length) {
+    if (!skipAfterCutoffFlag && violations.length) {
       return res.status(400).json({ error: "CUTOFF_PASSED", details: { violations } });
+    }
+    const skipped = { blocked, violations };
+    if (!allowedSlots.length) {
+      return res.status(400).json({ error: "NOTHING_TO_APPLY", details: { skipped } });
     }
 
     let targetUsers: Array<{ id: string; employeeId: string }> = [];
@@ -1301,6 +1333,8 @@ router.post(
           affectedUsers: 0,
           dates: dates.length,
           meals: meals.length,
+          applied: { slots: allowedSlots.length },
+          skipped,
           scope: { site: scopeSite, supervisorEmployeeId: scopeSupervisorEmployeeId },
         });
       }
@@ -1359,6 +1393,8 @@ router.post(
         affectedUsers: 0,
         dates: dates.length,
         meals: meals.length,
+        applied: { slots: allowedSlots.length },
+        skipped,
         scope: { site: scopeSite, supervisorEmployeeId: scopeSupervisorEmployeeId },
       });
     }
@@ -1366,34 +1402,32 @@ router.post(
     const source = req.user.role === Role.SUPERVISOR ? Source.SUPERVISOR : Source.ADMIN;
     const actions: any[] = [];
     for (const user of targetUsers) {
-      for (const date of dates) {
-        const dateValue = normalizeDateOnly(date);
-        for (const mealType of meals) {
-          actions.push(
-            prisma.mealChoice.upsert({
-              where: {
-                userId_date_mealType: {
-                  userId: user.id,
-                  date: dateValue,
-                  mealType,
-                },
-              },
-              create: {
+      for (const slot of allowedSlots) {
+        const dateValue = normalizeDateOnly(slot.date);
+        actions.push(
+          prisma.mealChoice.upsert({
+            where: {
+              userId_date_mealType: {
                 userId: user.id,
                 date: dateValue,
-                mealType,
-                wantMeal,
-                source,
-                updatedById: req.user.id,
+                mealType: slot.mealType,
               },
-              update: {
-                wantMeal,
-                source,
-                updatedById: req.user.id,
-              },
-            })
-          );
-        }
+            },
+            create: {
+              userId: user.id,
+              date: dateValue,
+              mealType: slot.mealType,
+              wantMeal,
+              source,
+              updatedById: req.user.id,
+            },
+            update: {
+              wantMeal,
+              source,
+              updatedById: req.user.id,
+            },
+          })
+        );
       }
     }
     if (actions.length) {
@@ -1411,6 +1445,8 @@ router.post(
         meals,
         wantMeal,
         affectedUsers: targetUsers.length,
+        applied: { slots: allowedSlots.length },
+        skipped,
         scope: { site: scopeSite, supervisorEmployeeId: scopeSupervisorEmployeeId },
       },
     });
@@ -1420,6 +1456,8 @@ router.post(
       affectedUsers: targetUsers.length,
       dates: dates.length,
       meals: meals.length,
+      applied: { slots: allowedSlots.length },
+      skipped,
       scope: { site: scopeSite, supervisorEmployeeId: scopeSupervisorEmployeeId },
     });
   }
