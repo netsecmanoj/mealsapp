@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  adminCreateInvite,
   adminAssignSupervisor,
   adminCreateUser,
   adminGetMasterData,
   adminImportUsers,
+  adminListInvites,
   adminListUsers,
+  adminRevokeInvite,
   adminResetPin,
   adminUpdateUser,
   getSession,
@@ -42,10 +45,20 @@ export default function AdminUsers() {
     supervisorEmployeeId: "",
     pin: "1234",
   });
+  const [inviteUser, setInviteUser] = useState({
+    email: "",
+    dept: "",
+    site: "",
+    role: "EMPLOYEE",
+    supervisorEmployeeId: "",
+  });
+  const [invites, setInvites] = useState([]);
+  const [latestInviteLink, setLatestInviteLink] = useState("");
   const [assignment, setAssignment] = useState({ employeeId: "", supervisorEmployeeId: "" });
   const role = getSession()?.user?.role;
   const isSuperAdmin = role === "SUPER_ADMIN";
   const canAssignSupervisor = role === "HR_ADMIN" || role === "SUPER_ADMIN";
+  const canManageInvites = role === "HR_ADMIN" || role === "SUPER_ADMIN";
   const canViewAdvanced = role === "ADMIN" || role === "HR_ADMIN" || role === "SUPER_ADMIN";
   const [showAdvanced, setShowAdvanced] = useState(false);
   const departments = masterData.departments || [];
@@ -90,6 +103,16 @@ export default function AdminUsers() {
     }
   };
 
+  const loadInvites = async () => {
+    setError("");
+    try {
+      const data = await adminListInvites({ status: "all", limit: 200 });
+      setInvites(data?.items || []);
+    } catch (err) {
+      setError(err.message || "Failed to load invites");
+    }
+  };
+
   const loadMasterData = async () => {
     setError("");
     try {
@@ -114,6 +137,11 @@ export default function AdminUsers() {
         dept: prev.dept || deptDefault || "",
         site: prev.site || siteDefault || "",
       }));
+      setInviteUser((prev) => ({
+        ...prev,
+        dept: prev.dept || deptDefault || "",
+        site: prev.site || siteDefault || "",
+      }));
       return nextMaster;
     } catch (err) {
       setError(err.message || "Failed to load master data");
@@ -127,12 +155,15 @@ export default function AdminUsers() {
       const master = await loadMasterData();
       if (!active) return;
       await loadUsers("", master || masterData);
+      if (canManageInvites) {
+        await loadInvites();
+      }
     };
     init();
     return () => {
       active = false;
     };
-  }, []);
+  }, [canManageInvites]);
 
   const handleCreate = async () => {
     setMessage("");
@@ -161,6 +192,63 @@ export default function AdminUsers() {
       loadUsers(query);
     } catch (err) {
       setError(err.message || "Failed");
+    }
+  };
+
+  const handleCreateInvite = async () => {
+    setMessage("");
+    setError("");
+    setLatestInviteLink("");
+    if (!inviteUser.email.trim()) {
+      setError("Email is required");
+      return;
+    }
+    if (inviteUser.role === "GROUND_STAFF") {
+      if (isUnassignedValue(inviteUser.site)) {
+        setError("Ground staff invite must include a site");
+        return;
+      }
+      if (!inviteUser.supervisorEmployeeId) {
+        setError("Supervisor is required for ground staff invite");
+        return;
+      }
+    }
+    try {
+      const result = await adminCreateInvite({
+        email: inviteUser.email.trim(),
+        dept: inviteUser.dept || undefined,
+        site: inviteUser.site || undefined,
+        role: inviteUser.role,
+        supervisorEmployeeId: inviteUser.supervisorEmployeeId || undefined,
+      });
+      const inviteLink = result?.inviteLink || "";
+      setLatestInviteLink(inviteLink);
+      setMessage("Invite created");
+      await loadInvites();
+    } catch (err) {
+      setError(err.message || "Failed to create invite");
+    }
+  };
+
+  const handleCopyInviteLink = async () => {
+    if (!latestInviteLink) return;
+    try {
+      await navigator.clipboard.writeText(latestInviteLink);
+      setMessage("Invite link copied");
+    } catch {
+      setError("Failed to copy invite link");
+    }
+  };
+
+  const handleRevokeInvite = async (id) => {
+    setMessage("");
+    setError("");
+    try {
+      await adminRevokeInvite(id);
+      setMessage("Invite revoked");
+      await loadInvites();
+    } catch (err) {
+      setError(err.message || "Failed to revoke invite");
     }
   };
 
@@ -264,8 +352,119 @@ export default function AdminUsers() {
         </div>
       ) : null}
 
+      {canManageInvites ? (
       <div className="card">
-        <h2>Create User</h2>
+        <h2>Invite User</h2>
+        <div className="field">
+          <label>Email (@akshayakalpa.org only)</label>
+          <input
+            value={inviteUser.email}
+            onChange={(event) => setInviteUser({ ...inviteUser, email: event.target.value })}
+            placeholder="employee@akshayakalpa.org"
+          />
+        </div>
+        <div className="field">
+          <label>Dept</label>
+          <select
+            value={inviteUser.dept}
+            onChange={(event) => setInviteUser({ ...inviteUser, dept: event.target.value })}
+            disabled={departments.length === 0}
+          >
+            {departments.length === 0 ? (
+              <option value="">No departments</option>
+            ) : (
+              departments.map((dept) => (
+                <option key={dept} value={dept}>
+                  {dept}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
+        <div className="field">
+          <label>Site</label>
+          <select
+            value={inviteUser.site}
+            onChange={(event) =>
+              setInviteUser((prev) => ({
+                ...prev,
+                site: event.target.value,
+                supervisorEmployeeId: prev.role === "GROUND_STAFF" ? "" : prev.supervisorEmployeeId,
+              }))
+            }
+            disabled={sites.length === 0}
+          >
+            {sites.length === 0 ? (
+              <option value="">No sites</option>
+            ) : (
+              sites.map((site) => (
+                <option key={site} value={site}>
+                  {site}
+                </option>
+              ))
+            )}
+          </select>
+        </div>
+        <div className="field">
+          <label>Role</label>
+          <select
+            value={inviteUser.role}
+            onChange={(event) =>
+              setInviteUser((prev) => ({
+                ...prev,
+                role: event.target.value,
+                supervisorEmployeeId:
+                  event.target.value === "GROUND_STAFF" ? "" : prev.supervisorEmployeeId,
+              }))
+            }
+          >
+            {roles.map((role) => (
+              <option key={role} value={role}>
+                {role}
+              </option>
+            ))}
+          </select>
+        </div>
+        {inviteUser.role === "GROUND_STAFF" ? (
+          <div className="field">
+            <label>Supervisor</label>
+            <select
+              value={inviteUser.supervisorEmployeeId}
+              onChange={(event) =>
+                setInviteUser((prev) => ({ ...prev, supervisorEmployeeId: event.target.value }))
+              }
+              disabled={isUnassignedValue(inviteUser.site)}
+            >
+              <option value="">Select supervisor</option>
+              {getSupervisorsForSite(inviteUser.site).map((user) => (
+                <option key={user.employeeId} value={user.employeeId}>
+                  {user.name} ({user.employeeId})
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+        <div className="list-controls">
+          <button className="button" onClick={handleCreateInvite}>
+            Create Invite
+          </button>
+          {latestInviteLink ? (
+            <button className="button secondary" onClick={handleCopyInviteLink}>
+              Copy
+            </button>
+          ) : null}
+        </div>
+        {latestInviteLink ? (
+          <div className="field" style={{ marginTop: 12 }}>
+            <label>Invite Link</label>
+            <input value={latestInviteLink} readOnly />
+          </div>
+        ) : null}
+      </div>
+      ) : null}
+
+      <div className="card">
+        <h2>Create User (Legacy PIN)</h2>
         <div className="field">
           <label>Employee ID</label>
           <input
@@ -432,6 +631,38 @@ export default function AdminUsers() {
           Import
         </button>
       </div>
+
+      {canManageInvites ? (
+      <div className="card">
+        <h2>Invites</h2>
+        <div className="list">
+          {invites.length === 0 ? (
+            <div className="message muted">No invites found.</div>
+          ) : (
+            invites.map((invite) => (
+              <div className="list-row" key={invite.id}>
+                <div className="list-main">
+                  <div className="row-title">{invite.email}</div>
+                  <div className="row-status">
+                    {invite.role} | Dept: {invite.dept || "Unassigned"} | Site: {invite.site || "Unassigned"}
+                  </div>
+                  <div className="row-status">
+                    Status: {invite.status} | Expires: {new Date(invite.expiresAt).toLocaleString()}
+                  </div>
+                </div>
+                <div className="list-controls">
+                  {invite.status === "ACTIVE" ? (
+                    <button className="button secondary" onClick={() => handleRevokeInvite(invite.id)}>
+                      Revoke
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+      ) : null}
 
       <div className="card">
         <h2>User List</h2>

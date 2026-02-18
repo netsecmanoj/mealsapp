@@ -13,37 +13,54 @@ function formatLocalDate(date: Date) {
 
 async function main() {
   const pinHash = await bcrypt.hash("1234", 10);
+  const adminPasswordHash = await bcrypt.hash("Admin@123", 10);
 
   const users = [
     {
       employeeId: "A1001",
       name: "Admin User",
+      email: "a1001@akshayakalpa.org",
       role: Role.SUPER_ADMIN,
       dept: "IT",
+      site: "HQ",
+      passwordHash: adminPasswordHash,
+      authProvider: "BOTH",
     },
     {
       employeeId: "H2001",
       name: "HR Admin",
+      email: "h2001@akshayakalpa.org",
       role: Role.HR_ADMIN,
       dept: "People",
+      site: "HQ",
+      authProvider: "PIN",
     },
     {
       employeeId: "S3001",
       name: "Supervisor One",
+      email: "s3001@akshayakalpa.org",
       role: Role.SUPERVISOR,
       dept: "Facilities",
+      site: "HQ",
+      authProvider: "PIN",
     },
     {
       employeeId: "E4001",
       name: "Employee One",
+      email: "e4001@akshayakalpa.org",
       role: Role.EMPLOYEE,
       dept: "Operations",
+      site: "HQ",
+      authProvider: "PIN",
     },
     {
       employeeId: "G5001",
       name: "Ground Staff",
+      email: "g5001@akshayakalpa.org",
       role: Role.GROUND_STAFF,
       dept: "Cafeteria",
+      site: "HQ",
+      authProvider: "PIN",
     },
   ];
 
@@ -54,16 +71,24 @@ async function main() {
       create: {
         employeeId: user.employeeId,
         name: user.name,
+        email: user.email,
         role: user.role,
         dept: user.dept,
+        site: user.site,
         pinHash,
+        ...(user.passwordHash ? { passwordHash: user.passwordHash } : {}),
+        ...(user.authProvider ? { authProvider: user.authProvider } : {}),
         active: true,
       },
       update: {
         name: user.name,
+        email: user.email,
         role: user.role,
         dept: user.dept,
+        site: user.site,
         pinHash,
+        ...(user.passwordHash ? { passwordHash: user.passwordHash } : {}),
+        ...(user.authProvider ? { authProvider: user.authProvider } : {}),
         active: true,
       },
     });

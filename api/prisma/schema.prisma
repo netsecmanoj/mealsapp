@@ -39,6 +39,10 @@ model User {
   id             String       @id @default(cuid())
   employeeId     String       @unique
   name           String
+  email          String?      @unique
+  passwordHash   String?
+  phone          String?
+  authProvider   String?
   dept           String?
   site           String?
   role           Role
@@ -61,6 +65,7 @@ model User {
   decidedMealRequests MealRequest[] @relation("MealRequestDecidedBy")
   createdVisitors Visitor[] @relation("VisitorCreatedBy")
   visitorMealChoices VisitorMealChoice[] @relation("VisitorMealCreatedBy")
+  createdInvites UserInvite[] @relation("UserInviteCreatedBy")
 }
 
 model MealChoice {
@@ -215,4 +220,24 @@ model VisitorMealChoice {
 
   @@unique([visitorId, date, mealType])
   @@index([date, mealType])
+}
+
+model UserInvite {
+  id                   String   @id @default(cuid())
+  email                String   @unique
+  role                 Role
+  dept                 String?
+  site                 String?
+  supervisorEmployeeId String?
+  tokenHash            String
+  expiresAt            DateTime
+  usedAt               DateTime?
+  createdByUserId      String?
+  createdAt            DateTime @default(now())
+
+  createdBy            User?    @relation("UserInviteCreatedBy", fields: [createdByUserId], references: [id])
+
+  @@index([expiresAt])
+  @@index([usedAt])
+  @@index([createdAt])
 }

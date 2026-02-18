@@ -95,10 +95,27 @@ async function apiFetch(path, options = {}) {
   return response.json();
 }
 
-export async function login(employeeId, pin) {
+export async function login(payloadOrEmployeeId, pin) {
+  const payload =
+    typeof payloadOrEmployeeId === "object" && payloadOrEmployeeId !== null
+      ? payloadOrEmployeeId
+      : { employeeId: payloadOrEmployeeId, pin };
   return apiFetch("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ employeeId, pin }),
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getInvite(token) {
+  return apiFetch(`/api/auth/invite/${encodeURIComponent(token)}`, {
+    method: "GET",
+  });
+}
+
+export async function registerFromInvite(payload) {
+  return apiFetch("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 
@@ -238,6 +255,27 @@ export async function adminCreateUser(payload) {
   return apiFetch("/api/admin/users", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function adminCreateInvite(payload) {
+  return apiFetch("/api/admin/invites", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function adminListInvites(params = {}) {
+  const searchParams = new URLSearchParams();
+  if (params.status) searchParams.set("status", params.status);
+  if (params.limit) searchParams.set("limit", String(params.limit));
+  const suffix = searchParams.toString();
+  return apiFetch(`/api/admin/invites${suffix ? `?${suffix}` : ""}`, { method: "GET" });
+}
+
+export async function adminRevokeInvite(id) {
+  return apiFetch(`/api/admin/invites/${id}/revoke`, {
+    method: "POST",
   });
 }
 

@@ -14,6 +14,7 @@ import Settings from "./pages/Settings.jsx";
 import Requests from "./pages/Requests.jsx";
 import AuditLog from "./pages/AuditLog.jsx";
 import MasterData from "./pages/MasterData.jsx";
+import InviteRegistration from "./pages/InviteRegistration.jsx";
 
 function ProtectedRoute({ children, roles }) {
   const session = getSession();
@@ -134,6 +135,7 @@ export default function App() {
           path="/login"
           element={session?.token ? <Navigate to="/schedule" replace /> : <Login />}
         />
+        <Route path="/invite/:token" element={<InviteRegistration />} />
         <Route
           path="/schedule"
           element={

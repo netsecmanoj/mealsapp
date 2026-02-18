@@ -78,6 +78,7 @@ Web runs at `http://localhost:5173` by default (Vite may auto-pick a different p
 ### Sample login (seed data)
 - Employee ID: `A1001`
 - PIN: `1234`
+- Password (Phase 1 test user): `Admin@123`
 
 Change or disable the seed user in production.
 
@@ -89,6 +90,10 @@ DATABASE_URL=file:./prisma/meals.sqlite
 JWT_SECRET=replace-with-a-long-random-string
 PORT=4000
 HOST=0.0.0.0
+AUTH_MODE=pin
+INVITE_ALLOWED_DOMAIN=akshayakalpa.org
+INVITE_TTL_HOURS=72
+INVITE_BASE_URL=https://cafeteria.akshayakalpa.org
 # Optional, comma-separated origins for CORS in production
 # CORS_ORIGIN=https://example.com,https://admin.example.com
 ```
@@ -128,6 +133,26 @@ docker compose run --rm api npm run seed:prod
 Notes:
 - Seed uses upserts and is safe to run multiple times.
 - Default seed PIN is `1234` for sample users.
+- Phase 1 seed includes `@akshayakalpa.org` emails and a password for `A1001`.
+
+## Auth mode (Phase 1)
+- `AUTH_MODE=pin`: only legacy Employee ID + PIN login is accepted.
+- `AUTH_MODE=both`: both PIN login and password login are accepted.
+- `AUTH_MODE=password`: only password login is accepted.
+
+`/api/auth/login` remains backward compatible with PIN payload:
+- PIN payload: `{ employeeId, pin }`
+- Password payload: `{ identifier, password }` where identifier is email or employee ID
+
+## Invite + self-registration flow (Phase 1)
+1. HR_ADMIN or SUPER_ADMIN creates invite from **Users -> Invite User**.
+2. System returns a link: `https://cafeteria.akshayakalpa.org/invite/<token>`.
+3. Employee opens `/invite/:token`, fills employee ID, name, password, phone(optional).
+4. App calls `/api/auth/register`, creates user, consumes invite, and signs user in.
+
+Constraints:
+- Invite, registration, and email login are restricted to `@akshayakalpa.org`.
+- Guest flow is unchanged.
 
 ## Docker build & compose (local or server)
 
@@ -221,6 +246,18 @@ More: docs/TROUBLESHOOTING.md
 - Copy the DB file from `/home/ubuntu/meals-app/db/meals.sqlite`.
 - Store backups off-host (daily recommended).
 - To restore: stop containers, replace the DB file, restart containers.
+
+## Rollback (Auth Phase 1)
+- Rollback tag before this phase: `pre-auth-phase1`
+- Example rollback:
+```bash
+git checkout pre-auth-phase1
+docker compose down
+docker compose up -d
+```
+
+Phase 2 note:
+- PIN removal is planned for Phase 2. Phase 1 keeps PIN login active for safe migration.
 
 ## Roadmap / TODO
 - Kiosk workflow improvements (fast lane + badge scanning)

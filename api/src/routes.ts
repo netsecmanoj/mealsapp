@@ -1,4 +1,5 @@
 import express from "express";
+import { createHash, randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { MealRequestStatus, MealType, PrismaClient, Role, Source } from "@prisma/client";
@@ -72,6 +73,178 @@ let masterDataCache: { ts: number; data: { departments: string[]; sites: string[
 const MASTER_MAX_ITEMS = 200;
 const MASTER_MAX_LENGTH = 60;
 const UNASSIGNED_LABEL = "Unassigned";
+const DEFAULT_AUTH_MODE = "pin";
+const AUTH_MODE_VALUES = new Set(["pin", "both", "password"]);
+const DEFAULT_INVITE_ALLOWED_DOMAIN = "akshayakalpa.org";
+const DEFAULT_INVITE_TTL_HOURS = 72;
+const DEFAULT_INVITE_BASE_URL = "https://cafeteria.akshayakalpa.org";
+const LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_RATE_LIMIT_MAX = 10;
+const REGISTER_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
+const REGISTER_RATE_LIMIT_MAX = 8;
+type AuthMode = "pin" | "both" | "password";
+type AuthRateBucket = { count: number; resetAt: number };
+const authRateBuckets = new Map<string, AuthRateBucket>();
+
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function getAuthMode(): AuthMode {
+  const raw = String(process.env.AUTH_MODE || DEFAULT_AUTH_MODE).trim().toLowerCase();
+  if (AUTH_MODE_VALUES.has(raw)) return raw as AuthMode;
+  return DEFAULT_AUTH_MODE as AuthMode;
+}
+
+function getInviteAllowedDomain(): string {
+  const raw = String(process.env.INVITE_ALLOWED_DOMAIN || DEFAULT_INVITE_ALLOWED_DOMAIN)
+    .trim()
+    .toLowerCase();
+  return raw.replace(/^@+/, "");
+}
+
+function isAllowedInviteEmail(email: string): boolean {
+  const normalized = normalizeEmail(email);
+  const domain = getInviteAllowedDomain();
+  return normalized.endsWith(`@${domain}`);
+}
+
+function getInviteTtlHours(): number {
+  const raw = Number(process.env.INVITE_TTL_HOURS || DEFAULT_INVITE_TTL_HOURS);
+  if (!Number.isFinite(raw)) return DEFAULT_INVITE_TTL_HOURS;
+  return Math.max(1, Math.min(24 * 14, Math.floor(raw)));
+}
+
+function hashInviteToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+function generateInviteToken(): string {
+  return randomBytes(32).toString("hex");
+}
+
+function generateRandomSecret(): string {
+  return randomBytes(48).toString("hex");
+}
+
+function buildInviteLink(token: string): string {
+  const base = String(process.env.INVITE_BASE_URL || DEFAULT_INVITE_BASE_URL).replace(/\/+$/, "");
+  return `${base}/invite/${token}`;
+}
+
+function getRequestIp(req: express.Request): string {
+  const forwarded = firstString(req.headers["x-forwarded-for"]);
+  if (forwarded) {
+    const [first] = forwarded.split(",");
+    if (first?.trim()) return first.trim();
+  }
+  return req.ip || "unknown";
+}
+
+function cleanupRateBuckets() {
+  if (authRateBuckets.size < 5000) return;
+  const now = Date.now();
+  for (const [key, value] of authRateBuckets.entries()) {
+    if (value.resetAt <= now) {
+      authRateBuckets.delete(key);
+    }
+  }
+}
+
+function consumeRateLimit(
+  key: string,
+  max: number,
+  windowMs: number
+): { limited: boolean; retryAfterSeconds: number } {
+  const now = Date.now();
+  const existing = authRateBuckets.get(key);
+  if (!existing || existing.resetAt <= now) {
+    authRateBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    cleanupRateBuckets();
+    return { limited: false, retryAfterSeconds: 0 };
+  }
+  existing.count += 1;
+  authRateBuckets.set(key, existing);
+  cleanupRateBuckets();
+  if (existing.count > max) {
+    return {
+      limited: true,
+      retryAfterSeconds: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
+    };
+  }
+  return { limited: false, retryAfterSeconds: 0 };
+}
+
+function checkAuthRateLimit(
+  req: express.Request,
+  res: express.Response,
+  scope: "login" | "register",
+  identifier: string
+) {
+  const ip = getRequestIp(req);
+  const keySuffix = identifier.trim().toLowerCase() || "unknown";
+  const max = scope === "login" ? LOGIN_RATE_LIMIT_MAX : REGISTER_RATE_LIMIT_MAX;
+  const windowMs =
+    scope === "login" ? LOGIN_RATE_LIMIT_WINDOW_MS : REGISTER_RATE_LIMIT_WINDOW_MS;
+  const attempts = [
+    consumeRateLimit(`${scope}:ip:${ip}`, max, windowMs),
+    consumeRateLimit(`${scope}:id:${keySuffix}`, max, windowMs),
+  ];
+  const limited = attempts.find((attempt) => attempt.limited);
+  if (limited) {
+    res.setHeader("Retry-After", String(limited.retryAfterSeconds));
+    res.status(429).json({
+      error: "TOO_MANY_ATTEMPTS",
+      retryAfterSeconds: limited.retryAfterSeconds,
+    });
+    return true;
+  }
+  return false;
+}
+
+function validatePasswordPolicy(password: string): string | null {
+  if (password.length < 8) return "PASSWORD_TOO_SHORT";
+  if (!/[A-Z]/.test(password)) return "PASSWORD_NEEDS_UPPERCASE";
+  if (!/[a-z]/.test(password)) return "PASSWORD_NEEDS_LOWERCASE";
+  if (!/[0-9]/.test(password)) return "PASSWORD_NEEDS_NUMBER";
+  if (!/[^A-Za-z0-9]/.test(password)) return "PASSWORD_NEEDS_SPECIAL_CHAR";
+  return null;
+}
+
+function toAuthResponse(user: {
+  id: string;
+  employeeId: string;
+  name: string;
+  dept: string | null;
+  site: string | null;
+  role: Role;
+}) {
+  const token = signToken({
+    id: user.id,
+    employeeId: user.employeeId,
+    name: user.name,
+    dept: user.dept,
+    site: user.site ?? null,
+    role: user.role,
+  });
+
+  return {
+    token,
+    user: {
+      employeeId: user.employeeId,
+      name: user.name,
+      role: user.role,
+      dept: user.dept,
+      site: user.site ?? null,
+    },
+  };
+}
+
+function getInviteStatus(invite: { usedAt: Date | null; expiresAt: Date }, now: Date) {
+  if (invite.usedAt) return "USED";
+  if (invite.expiresAt <= now) return "EXPIRED";
+  return "ACTIVE";
+}
 
 function getDefaultSettings() {
   return {
@@ -509,7 +682,15 @@ function findPreference(preferences: any[], dateStr: string): any | null {
   return null;
 }
 
-const SENSITIVE_AUDIT_KEYS = new Set(["pinhash", "password", "token", "secret", "authorization"]);
+const SENSITIVE_AUDIT_KEYS = new Set([
+  "pinhash",
+  "passwordhash",
+  "password",
+  "tokenhash",
+  "token",
+  "secret",
+  "authorization",
+]);
 
 function redactSensitive(value: any): any {
   if (value === null || value === undefined) return value;
@@ -709,49 +890,332 @@ async function getEffectiveChoicesForUser(userId: string, from: string, to: stri
 }
 
 router.post("/auth/login", async (req, res) => {
-  const schema = z.object({
-    employeeId: z.string().trim().min(1),
-    pin: z.string().trim().min(1),
+  const employeeId = typeof req.body?.employeeId === "string" ? req.body.employeeId.trim() : "";
+  const pin = typeof req.body?.pin === "string" ? req.body.pin.trim() : "";
+  const identifier = typeof req.body?.identifier === "string" ? req.body.identifier.trim() : "";
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const authMode = getAuthMode();
+
+  if (employeeId && pin) {
+    if (authMode === "password") {
+      return res.status(403).json({ error: "PIN_LOGIN_DISABLED" });
+    }
+    if (checkAuthRateLimit(req, res, "login", employeeId)) return;
+    const user = await prisma.user.findFirst({
+      where: { employeeId, active: true },
+      select: {
+        id: true,
+        employeeId: true,
+        name: true,
+        dept: true,
+        site: true,
+        role: true,
+        pinHash: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const match = await bcrypt.compare(pin, user.pinHash);
+    if (!match) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    return res.json(toAuthResponse(user));
+  }
+
+  if (identifier && password) {
+    if (authMode === "pin") {
+      return res.status(403).json({ error: "PASSWORD_LOGIN_DISABLED" });
+    }
+    const normalizedIdentifier = identifier.toLowerCase();
+    if (checkAuthRateLimit(req, res, "login", normalizedIdentifier)) return;
+    const isEmail = identifier.includes("@");
+    if (isEmail && !isAllowedInviteEmail(identifier)) {
+      return res.status(403).json({ error: "EMAIL_DOMAIN_NOT_ALLOWED" });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: isEmail
+        ? { email: normalizeEmail(identifier), active: true }
+        : { employeeId: identifier, active: true },
+      select: {
+        id: true,
+        employeeId: true,
+        name: true,
+        dept: true,
+        site: true,
+        role: true,
+        email: true,
+        passwordHash: true,
+      },
+    });
+    if (!user || !user.passwordHash || !user.email || !isAllowedInviteEmail(user.email)) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    const match = await bcrypt.compare(password, user.passwordHash);
+    if (!match) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+
+    return res.json(toAuthResponse(user));
+  }
+
+  return res.status(400).json({
+    error: "Invalid payload",
+    expected: [
+      "{ employeeId, pin }",
+      "{ identifier, password }",
+    ],
+  });
+});
+
+router.get("/auth/invite/:token", async (req, res) => {
+  let token: string;
+  try {
+    token = mustString(req.params.token, "token").trim();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(400).json({ error: message });
+  }
+  if (!token) {
+    return res.status(400).json({ error: "Invalid token" });
+  }
+
+  const invite = await prisma.userInvite.findFirst({
+    where: { tokenHash: hashInviteToken(token) },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      dept: true,
+      site: true,
+      supervisorEmployeeId: true,
+      expiresAt: true,
+      usedAt: true,
+      createdAt: true,
+    },
   });
 
+  if (!invite) {
+    return res.status(404).json({ error: "INVITE_NOT_FOUND" });
+  }
+  if (invite.usedAt) {
+    return res.status(410).json({ error: "INVITE_ALREADY_USED" });
+  }
+  if (invite.expiresAt <= new Date()) {
+    return res.status(410).json({ error: "INVITE_EXPIRED" });
+  }
+
+  return res.json({
+    id: invite.id,
+    email: invite.email,
+    role: invite.role,
+    dept: invite.dept,
+    site: invite.site,
+    supervisorEmployeeId: invite.supervisorEmployeeId,
+    expiresAt: invite.expiresAt,
+    createdAt: invite.createdAt,
+  });
+});
+
+router.post("/auth/register", async (req, res) => {
+  const schema = z.object({
+    token: z.string().trim().min(1),
+    employeeId: z.string().trim().min(1),
+    name: z.string().trim().min(1),
+    password: z.string().min(1),
+    phone: z.string().trim().optional(),
+    dept: z.string().trim().optional(),
+    site: z.string().trim().optional(),
+  });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid payload" });
   }
+  if (checkAuthRateLimit(req, res, "register", parsed.data.employeeId)) return;
 
-  const { employeeId, pin } = parsed.data;
-  const user = await prisma.user.findFirst({
-    where: { employeeId, active: true },
-  });
-
-  if (!user) {
-    return res.status(401).json({ error: "Invalid credentials" });
+  const { token, employeeId, name, password, phone, dept, site } = parsed.data;
+  const passwordPolicyError = validatePasswordPolicy(password);
+  if (passwordPolicyError) {
+    return res.status(400).json({ error: passwordPolicyError });
   }
 
-  const match = await bcrypt.compare(pin, user.pinHash);
-  if (!match) {
-    return res.status(401).json({ error: "Invalid credentials" });
-  }
-
-  const token = signToken({
-    id: user.id,
-    employeeId: user.employeeId,
-    name: user.name,
-    dept: user.dept,
-    site: user.site ?? null,
-    role: user.role,
-  });
-
-  return res.json({
-    token,
-    user: {
-      employeeId: user.employeeId,
-      name: user.name,
-      role: user.role,
-      dept: user.dept,
-      site: user.site ?? null,
+  const tokenHash = hashInviteToken(token);
+  const invite = await prisma.userInvite.findFirst({
+    where: { tokenHash },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      dept: true,
+      site: true,
+      supervisorEmployeeId: true,
+      expiresAt: true,
+      usedAt: true,
     },
   });
+
+  if (!invite) {
+    return res.status(404).json({ error: "INVITE_NOT_FOUND" });
+  }
+  if (invite.usedAt) {
+    return res.status(410).json({ error: "INVITE_ALREADY_USED" });
+  }
+  if (invite.expiresAt <= new Date()) {
+    return res.status(410).json({ error: "INVITE_EXPIRED" });
+  }
+  if (!isAllowedInviteEmail(invite.email)) {
+    return res.status(400).json({ error: "EMAIL_DOMAIN_NOT_ALLOWED" });
+  }
+
+  const masterData = await getMasterDataSnapshot();
+  const deptInput = invite.dept ?? dept;
+  const siteInput = invite.site ?? site;
+  const deptResolved = resolveMasterValue(deptInput, masterData.departments);
+  if (deptResolved.error) {
+    return res.status(400).json({ error: "INVALID_DEPT", allowed: masterData.departments });
+  }
+  const siteResolved = resolveMasterValue(siteInput, masterData.sites);
+  if (siteResolved.error) {
+    return res.status(400).json({ error: "INVALID_SITE", allowed: masterData.sites });
+  }
+
+  const supervisorEmployeeId = invite.supervisorEmployeeId?.trim() || null;
+  if (invite.role === Role.GROUND_STAFF) {
+    if (isUnassignedValue(siteResolved.value)) {
+      return res.status(400).json({ error: "SITE_REQUIRED_FOR_GROUND_STAFF" });
+    }
+    if (!supervisorEmployeeId) {
+      return res.status(400).json({ error: "SUPERVISOR_REQUIRED_FOR_GROUND_STAFF" });
+    }
+  }
+
+  const [existingEmployeeId, existingEmail] = await Promise.all([
+    prisma.user.findUnique({ where: { employeeId }, select: { id: true } }),
+    prisma.user.findFirst({
+      where: { email: normalizeEmail(invite.email) },
+      select: { id: true },
+    }),
+  ]);
+  if (existingEmployeeId) {
+    return res.status(409).json({ error: "EMPLOYEE_ID_ALREADY_EXISTS" });
+  }
+  if (existingEmail) {
+    return res.status(409).json({ error: "EMAIL_ALREADY_EXISTS" });
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const pinHash = await bcrypt.hash(generateRandomSecret(), 10);
+  const now = new Date();
+  const normalizedInviteEmail = normalizeEmail(invite.email);
+  try {
+    const createdUser = await prisma.$transaction(async (tx) => {
+      let supervisor: { id: string; employeeId: string; site: string | null } | null = null;
+      if (supervisorEmployeeId) {
+        supervisor = await tx.user.findFirst({
+          where: {
+            employeeId: supervisorEmployeeId,
+            role: Role.SUPERVISOR,
+            active: true,
+          },
+          select: { id: true, employeeId: true, site: true },
+        });
+        if (!supervisor) {
+          throw new Error("SUPERVISOR_NOT_FOUND");
+        }
+      }
+
+      if (invite.role === Role.GROUND_STAFF) {
+        if (!supervisor || isUnassignedValue(supervisor.site) || supervisor.site !== siteResolved.value) {
+          throw new Error("SUPERVISOR_SITE_MISMATCH");
+        }
+      }
+
+      const user = await tx.user.create({
+        data: {
+          employeeId,
+          name,
+          email: normalizedInviteEmail,
+          phone: phone?.trim() || null,
+          dept: deptResolved.value,
+          site: siteResolved.value,
+          role: invite.role,
+          pinHash,
+          passwordHash,
+          authProvider: "PASSWORD",
+          active: true,
+        },
+        select: {
+          id: true,
+          employeeId: true,
+          name: true,
+          dept: true,
+          site: true,
+          role: true,
+        },
+      });
+
+      if (invite.role === Role.GROUND_STAFF && supervisor) {
+        await tx.supervisorAssignment.upsert({
+          where: { employeeId: user.id },
+          create: {
+            employeeId: user.id,
+            supervisorId: supervisor.id,
+          },
+          update: {
+            supervisorId: supervisor.id,
+          },
+        });
+      }
+
+      const consume = await tx.userInvite.updateMany({
+        where: {
+          id: invite.id,
+          tokenHash,
+          usedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { usedAt: now },
+      });
+
+      if (consume.count !== 1) {
+        throw new Error("INVITE_ALREADY_USED");
+      }
+
+      return user;
+    });
+
+    await logAudit({
+      actorId: createdUser.id,
+      action: "REGISTER_USER",
+      entity: "User",
+      entityId: createdUser.id,
+      after: {
+        employeeId: createdUser.employeeId,
+        role: createdUser.role,
+        dept: createdUser.dept,
+        site: createdUser.site,
+      },
+    });
+
+    return res.json(toAuthResponse(createdUser));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "REGISTER_FAILED";
+    if (message === "SUPERVISOR_NOT_FOUND") {
+      return res.status(404).json({ error: "Supervisor not found" });
+    }
+    if (message === "SUPERVISOR_SITE_MISMATCH") {
+      return res.status(400).json({ error: "SUPERVISOR_SITE_MISMATCH" });
+    }
+    if (message === "INVITE_ALREADY_USED") {
+      return res.status(410).json({ error: "INVITE_ALREADY_USED" });
+    }
+    throw error;
+  }
 });
 
 router.get("/system/time", authMiddleware, async (_req, res) => {
@@ -1820,6 +2284,261 @@ router.post(
 );
 
 router.get(
+  "/admin/invites",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (req, res) => {
+    const schema = z.object({
+      status: z.enum(["active", "used", "expired", "all"]).optional(),
+      limit: z.coerce.number().int().min(1).max(500).optional(),
+    });
+    const parsed = schema.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid query params" });
+    }
+
+    const status = parsed.data.status || "all";
+    const limit = parsed.data.limit ?? 200;
+    const now = new Date();
+    const invites = await prisma.userInvite.findMany({
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        dept: true,
+        site: true,
+        supervisorEmployeeId: true,
+        expiresAt: true,
+        usedAt: true,
+        createdAt: true,
+        createdBy: {
+          select: {
+            employeeId: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    const items = invites
+      .map((invite) => ({
+        ...invite,
+        status: getInviteStatus(invite, now),
+      }))
+      .filter((invite) => {
+        if (status === "all") return true;
+        if (status === "active") return invite.status === "ACTIVE";
+        if (status === "used") return invite.status === "USED";
+        return invite.status === "EXPIRED";
+      });
+
+    return res.json({ items });
+  }
+);
+
+router.post(
+  "/admin/invites",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (req, res) => {
+    const schema = z.object({
+      email: z.string().trim().email(),
+      role: z.nativeEnum(Role),
+      dept: z.string().trim().optional(),
+      site: z.string().trim().optional(),
+      supervisorEmployeeId: z.string().trim().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success || !req.user) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+    const data = parsed.data;
+    if (req.user.role === Role.HR_ADMIN && data.role === Role.SUPER_ADMIN) {
+      return res.status(403).json({ error: "ROLE_NOT_ALLOWED" });
+    }
+
+    const email = normalizeEmail(data.email);
+    if (!isAllowedInviteEmail(email)) {
+      return res.status(400).json({
+        error: "EMAIL_DOMAIN_NOT_ALLOWED",
+        allowedDomain: getInviteAllowedDomain(),
+      });
+    }
+
+    const masterData = await getMasterDataSnapshot();
+    const deptResolved = resolveMasterValue(data.dept, masterData.departments);
+    if (deptResolved.error) {
+      return res.status(400).json({ error: "INVALID_DEPT", allowed: masterData.departments });
+    }
+    const siteResolved = resolveMasterValue(data.site, masterData.sites);
+    if (siteResolved.error) {
+      return res.status(400).json({ error: "INVALID_SITE", allowed: masterData.sites });
+    }
+
+    const supervisorEmployeeId = data.supervisorEmployeeId?.trim() || null;
+    if (data.role === Role.GROUND_STAFF) {
+      if (isUnassignedValue(siteResolved.value)) {
+        return res.status(400).json({ error: "SITE_REQUIRED_FOR_GROUND_STAFF" });
+      }
+      if (!supervisorEmployeeId) {
+        return res.status(400).json({ error: "SUPERVISOR_REQUIRED_FOR_GROUND_STAFF" });
+      }
+    }
+
+    const [existingUserByEmail, supervisor] = await Promise.all([
+      prisma.user.findFirst({
+        where: { email },
+        select: { id: true, employeeId: true },
+      }),
+      supervisorEmployeeId
+        ? prisma.user.findFirst({
+            where: { employeeId: supervisorEmployeeId, role: Role.SUPERVISOR, active: true },
+            select: { id: true, employeeId: true, site: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    if (existingUserByEmail) {
+      return res.status(409).json({ error: "EMAIL_ALREADY_EXISTS" });
+    }
+
+    if (supervisorEmployeeId && !supervisor) {
+      return res.status(404).json({ error: "Supervisor not found" });
+    }
+    if (data.role === Role.GROUND_STAFF) {
+      if (!supervisor || isUnassignedValue(supervisor.site) || supervisor.site !== siteResolved.value) {
+        return res.status(400).json({ error: "SUPERVISOR_SITE_MISMATCH" });
+      }
+    }
+
+    const inviteToken = generateInviteToken();
+    const tokenHash = hashInviteToken(inviteToken);
+    const expiresAt = new Date(Date.now() + getInviteTtlHours() * 60 * 60 * 1000);
+
+    const invite = await prisma.userInvite.upsert({
+      where: { email },
+      create: {
+        email,
+        role: data.role,
+        dept: deptResolved.value,
+        site: siteResolved.value,
+        supervisorEmployeeId,
+        tokenHash,
+        expiresAt,
+        createdByUserId: req.user.id,
+      },
+      update: {
+        role: data.role,
+        dept: deptResolved.value,
+        site: siteResolved.value,
+        supervisorEmployeeId,
+        tokenHash,
+        expiresAt,
+        usedAt: null,
+        createdByUserId: req.user.id,
+      },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        dept: true,
+        site: true,
+        supervisorEmployeeId: true,
+        expiresAt: true,
+        usedAt: true,
+        createdAt: true,
+      },
+    });
+
+    await logAudit({
+      actorId: req.user.id,
+      action: "CREATE_USER_INVITE",
+      entity: "UserInvite",
+      entityId: invite.id,
+      after: {
+        email: invite.email,
+        role: invite.role,
+        dept: invite.dept,
+        site: invite.site,
+        supervisorEmployeeId: invite.supervisorEmployeeId,
+        expiresAt: invite.expiresAt,
+      },
+    });
+
+    return res.json({
+      invite,
+      inviteLink: buildInviteLink(inviteToken),
+    });
+  }
+);
+
+router.post(
+  "/admin/invites/:id/revoke",
+  authMiddleware,
+  requireRole([Role.HR_ADMIN, Role.SUPER_ADMIN]),
+  async (req, res) => {
+    if (!req.user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    let inviteId: string;
+    try {
+      inviteId = mustString(req.params.id, "id");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(400).json({ error: message });
+    }
+    const existing = await prisma.userInvite.findUnique({
+      where: { id: inviteId },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        dept: true,
+        site: true,
+        supervisorEmployeeId: true,
+        expiresAt: true,
+        usedAt: true,
+      },
+    });
+    if (!existing) {
+      return res.status(404).json({ error: "Invite not found" });
+    }
+
+    const now = new Date();
+    const invite = await prisma.userInvite.update({
+      where: { id: inviteId },
+      data: {
+        expiresAt: now,
+      },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        dept: true,
+        site: true,
+        supervisorEmployeeId: true,
+        expiresAt: true,
+        usedAt: true,
+        createdAt: true,
+      },
+    });
+
+    await logAudit({
+      actorId: req.user.id,
+      action: "REVOKE_USER_INVITE",
+      entity: "UserInvite",
+      entityId: invite.id,
+      before: existing,
+      after: invite,
+    });
+
+    return res.json({ invite });
+  }
+);
+
+router.get(
   "/admin/users",
   authMiddleware,
   requireRole([Role.ADMIN, Role.HR_ADMIN, Role.SUPER_ADMIN]),
@@ -2097,6 +2816,7 @@ router.post(
         site: siteResolved.value,
         role: data.role,
         pinHash,
+        authProvider: "PIN",
         active: true,
       },
       select: {
@@ -2442,6 +3162,7 @@ router.post(
           site: siteResolved.value,
           role: item.role,
           pinHash,
+          authProvider: "PIN",
           active: true,
         },
         update: {
@@ -2450,6 +3171,7 @@ router.post(
           site: siteResolved.value,
           role: item.role,
           pinHash,
+          authProvider: "PIN",
           active: true,
         },
         select: {

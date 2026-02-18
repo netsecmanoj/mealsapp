@@ -45,6 +45,10 @@ DATABASE_URL=file:/data/meals.sqlite
 JWT_SECRET=replace-with-a-long-random-string
 PORT=4000
 HOST=0.0.0.0
+AUTH_MODE=pin
+INVITE_ALLOWED_DOMAIN=akshayakalpa.org
+INVITE_TTL_HOURS=72
+INVITE_BASE_URL=https://cafeteria.akshayakalpa.org
 ```
 
 5) Open firewall/security-group ports:
@@ -72,6 +76,22 @@ docker compose up -d --build
 4) Certificate storage:
 - Caddy stores certificate/account state in Docker named volume `caddy_data`.
 - Additional runtime config is in Docker named volume `caddy_config`.
+
+## Auth Phase 1: Invite + Password login
+
+Auth mode switch:
+- `AUTH_MODE=pin` -> only legacy PIN login
+- `AUTH_MODE=both` -> PIN + password login
+- `AUTH_MODE=password` -> only password login
+
+Invite flow:
+1) HR_ADMIN/SUPER_ADMIN creates invite via `POST /api/admin/invites`
+2) Share `https://cafeteria.akshayakalpa.org/invite/<token>`
+3) Employee completes registration at `/invite/:token`
+4) App calls `POST /api/auth/register` and signs in user
+
+Domain restriction:
+- Invite, registration, and email-login are restricted to `@akshayakalpa.org`
 
 ## Deploy / upgrade
 
@@ -142,6 +162,13 @@ docker compose down
 docker compose up -d
 ```
 
+Auth Phase 1 rollback anchor:
+```bash
+git checkout pre-auth-phase1
+docker compose down
+docker compose up -d
+```
+
 If temporary direct access is needed during rollback:
 - Restore old port mappings for `web` (`8095:80`) and `api` (`4000:4000`) in `docker-compose.yml`, then redeploy.
 
@@ -152,3 +179,4 @@ DB safety:
 ## Notes
 - `/api/health` checks database connectivity.
 - Existing `API_ENV_FILE` and `API_DB_DIR` fallbacks remain supported in Compose.
+- Phase 2 will remove PIN login after password rollout is complete.

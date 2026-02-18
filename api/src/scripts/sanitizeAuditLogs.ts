@@ -1,7 +1,15 @@
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
-const SENSITIVE_KEYS = new Set(["pinhash", "password", "token", "secret", "authorization"]);
+const SENSITIVE_KEYS = new Set([
+  "pinhash",
+  "passwordhash",
+  "password",
+  "tokenhash",
+  "token",
+  "secret",
+  "authorization",
+]);
 
 function redactSensitive(value: any): any {
   if (value === null || value === undefined) return value;
