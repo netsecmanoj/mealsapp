@@ -4,8 +4,6 @@ services:
     build:
       context: ./api
       dockerfile: Dockerfile
-    ports:
-      - "4000:4000"
     env_file:
       - ${API_ENV_FILE:-/home/ubuntu/meals-app/config/api.env}
     volumes:
@@ -17,8 +15,23 @@ services:
     build:
       context: .
       dockerfile: web/Dockerfile
-    ports:
-      - "8095:80"
     depends_on:
       - api
     restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

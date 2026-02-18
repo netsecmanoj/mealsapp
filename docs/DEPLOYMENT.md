@@ -1,8 +1,9 @@
 # Deployment (Ubuntu + Docker)
 
-This project deploys two containers:
-- `web` (Nginx serving the Vite build)
-- `api` (Node/Express API + Prisma)
+This project deploys three containers:
+- `caddy` (public reverse proxy + TLS termination)
+- `web` (Nginx serving the Vite build, internal only)
+- `api` (Node/Express API + Prisma, internal only)
 
 SQLite is persisted on the host and mounted into the API container.
 
@@ -46,10 +47,31 @@ PORT=4000
 HOST=0.0.0.0
 ```
 
-5) Open firewall ports:
+5) Open firewall/security-group ports:
 - TCP 22 (restricted)
-- TCP 8095 (public)
-- TCP 443 (optional for TLS termination)
+- TCP 80 (public, required for ACME challenge + HTTP->HTTPS redirect)
+- TCP 443 (public HTTPS)
+
+## HTTPS with Caddy (`cafeteria.akshayakalpa.org`)
+
+1) DNS requirement:
+- Create an `A` record for `cafeteria.akshayakalpa.org` pointing to your server public IPv4.
+
+2) Start services:
+```bash
+cd /home/ubuntu/meals-app/current
+docker compose up -d --build
+```
+
+3) Caddy behavior:
+- Automatically obtains and renews Let's Encrypt certificates.
+- Terminates TLS on `:443`.
+- Redirects HTTP (`:80`) to HTTPS.
+- Proxies all traffic to `web:80`.
+
+4) Certificate storage:
+- Caddy stores certificate/account state in Docker named volume `caddy_data`.
+- Additional runtime config is in Docker named volume `caddy_config`.
 
 ## Deploy / upgrade
 
@@ -66,13 +88,28 @@ docker compose run --rm api npx prisma migrate deploy
 docker compose up -d --remove-orphans
 ```
 
-## Verify
+## Verification
+
 ```bash
-curl -i http://<server-ip>:8095/api/health
+docker compose config
+docker compose up -d --build
+docker compose logs -f caddy
+curl -I http://cafeteria.akshayakalpa.org
+curl -I https://cafeteria.akshayakalpa.org
+curl -i https://cafeteria.akshayakalpa.org/api/health
+ss -lntp | egrep ':80|:443|:8095|:4000'
 ```
+
+Expected results:
+- HTTP returns `301` or `308` redirect to HTTPS.
+- HTTPS responds with valid TLS and `200` for app pages.
+- `/api/health` returns API health payload through the web proxy path.
+- Only ports `80` and `443` are publicly bound by Compose services.
 
 ## Logs
 ```bash
+docker compose logs -f caddy
+docker compose logs -f web
 docker compose logs -f api
 ```
 
@@ -89,28 +126,29 @@ cp /home/ubuntu/meals-app/db/meals.sqlite /home/ubuntu/meals-app/db/backups/meal
 docker compose start api
 ```
 
-## Rollback
-- Re-deploy a previous commit (via your CI/CD or manual checkout) and run the same deploy steps.
-- Restore the DB file if schema compatibility is an issue.
-
 ## Rollback procedure
 
-### Revert this commit (git revert)
+Option A: revert commit and redeploy
 ```bash
 git revert <sha>
+docker compose down
+docker compose up -d
 ```
 
-### Redeploy a previous commit on the server
+Option B: checkout previous known-good commit and redeploy
 ```bash
-git checkout <sha>
-docker compose build
-docker compose up -d --remove-orphans
+git checkout <previous_sha>
+docker compose down
+docker compose up -d
 ```
 
-### Backup reminder
-Before any migration changes, back up:
-`/home/ubuntu/meals-app/db/meals.sqlite`
+If temporary direct access is needed during rollback:
+- Restore old port mappings for `web` (`8095:80`) and `api` (`4000:4000`) in `docker-compose.yml`, then redeploy.
+
+DB safety:
+- Do not delete Docker volumes for DB data.
+- Do not delete `/home/ubuntu/meals-app/db/meals.sqlite`.
 
 ## Notes
 - `/api/health` checks database connectivity.
-- For HTTPS, terminate TLS in front of Nginx (or replace Nginx config with TLS-enabled setup).
+- Existing `API_ENV_FILE` and `API_DB_DIR` fallbacks remain supported in Compose.

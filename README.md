@@ -8,6 +8,9 @@ Quick links:
 - docs/DEPLOYMENT.md
 - docs/TROUBLESHOOTING.md
 
+Production URL:
+- https://cafeteria.akshayakalpa.org
+
 ## Features
 - Employee meal scheduling with cutoff enforcement and timezone-aware rules
 - Meal requests/approvals for exceptions
@@ -145,12 +148,13 @@ docker compose up -d
 ```
 
 Ports:
-- Web: `8095` -> container `80`
-- API: `4000` -> container `4000`
+- HTTP: `80` -> `caddy` (redirects to HTTPS)
+- HTTPS: `443` -> `caddy` (public entrypoint)
+- `web` and `api` are internal-only on the Docker network
 
 Health check (via web proxy):
 ```bash
-curl -i http://localhost:8095/api/health
+curl -i https://cafeteria.akshayakalpa.org/api/health
 ```
 
 ## Server deployment runbook (Ubuntu + Docker)
@@ -171,8 +175,8 @@ HOST=0.0.0.0
 ```
 4) Open firewall ports:
 - TCP 22 (restricted)
-- TCP 8095 (public)
-- TCP 443 (optional for TLS)
+- TCP 80 (public, required for ACME HTTP challenge + redirect)
+- TCP 443 (public HTTPS)
 5) Deploy:
 ```bash
 cd /home/ubuntu/meals-app/current
@@ -185,7 +189,9 @@ docker compose up -d --remove-orphans
 ```
 6) Verify:
 ```bash
-curl -i http://<server-ip>:8095/api/health
+curl -I http://cafeteria.akshayakalpa.org
+curl -I https://cafeteria.akshayakalpa.org
+curl -i https://cafeteria.akshayakalpa.org/api/health
 ```
 7) Logs:
 ```bash
@@ -217,7 +223,6 @@ More: docs/TROUBLESHOOTING.md
 - To restore: stop containers, replace the DB file, restart containers.
 
 ## Roadmap / TODO
-- Enable PWA install over HTTPS with a real domain + TLS
 - Kiosk workflow improvements (fast lane + badge scanning)
 - Supervisor bulk group updates
 - CSV import for users and preferences
